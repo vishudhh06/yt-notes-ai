@@ -9,19 +9,49 @@ function extractVideoId(input: string) {
   return match && match[2].length === 11 ? match[2] : null;
 }
 
+// Auto-fallback across models so 503 high-demand error never breaks notes
+async function generateNotesWithFallback(prompt: string) {
+  const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+  let lastError: any = null;
+
+  for (const modelName of models) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: { temperature: 0.4 },
+      });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      if (text) return text;
+    } catch (err: any) {
+      lastError = err;
+      // Short pause before trying backup model
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+  throw lastError || new Error('AI servers abhi busy hain, 10 second baad dobara try karein.');
+}
+
 export async function POST(req: Request) {
   try {
     const { url, action, language, transcriptText } = await req.json();
 
-    // Generate AI Study Notes (Only runs when user clicks Generate Notes)
     if (action === 'summarize') {
       if (!transcriptText) {
         return NextResponse.json({ error: 'Transcript empty hai.' }, { status: 400 });
       }
-      const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash' });
-      const prompt = `Create clean, structured study notes and a quick summary in ${language || 'English'} from this YouTube transcript:\n\n${transcriptText.slice(0, 35000)}`;
-      const result = await model.generateContent(prompt);
-      return NextResponse.json({ notes: result.response.text() });
+      const prompt = `You are an expert study assistant. Create clean, well-structured, easy-to-read notes in ${language || 'English'} from the YouTube transcript below.
+
+Format clearly with:
+- **Quick Overview** (3-4 crisp lines)
+- **Key Takeaways & Insights** (Clear bullet points)
+- **Actionable Summary**
+
+Transcript:
+${transcriptText.slice(0, 35000)}`;
+
+      const notes = await generateNotesWithFallback(prompt);
+      return NextResponse.json({ notes });
     }
 
     const videoId = extractVideoId(url);
@@ -65,7 +95,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ videoId, segments });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error?.message || 'Transcript fetch failed.' },
+      { error: error?.message || 'Request failed. Please try again.' },
       { status: 500 }
     );
   }

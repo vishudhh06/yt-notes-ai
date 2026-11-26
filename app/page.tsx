@@ -11,6 +11,9 @@ import {
   Sparkles,
   Loader2,
   Clock,
+  Sun,
+  Moon,
+  ArrowUpRight,
 } from 'lucide-react';
 
 interface Segment {
@@ -33,6 +36,7 @@ function TranscriptWorkspace() {
   const router = useRouter();
   const urlParam = searchParams.get('v');
 
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [inputUrl, setInputUrl] = useState('');
   const [videoId, setVideoId] = useState('');
   const [startTime, setStartTime] = useState(0);
@@ -47,6 +51,8 @@ function TranscriptWorkspace() {
   const [notesLoading, setNotesLoading] = useState(false);
   const [language, setLanguage] = useState('English');
   const [viewMode, setViewMode] = useState<'transcript' | 'notes'>('transcript');
+
+  const isDark = theme === 'dark';
 
   const fetchTranscript = async (target: string) => {
     setLoading(true);
@@ -90,7 +96,7 @@ function TranscriptWorkspace() {
   };
 
   const handleGenerateNotes = async () => {
-    if (notes) {
+    if (notes && !notes.startsWith('Notes error:')) {
       setViewMode('notes');
       return;
     }
@@ -111,7 +117,7 @@ function TranscriptWorkspace() {
       if (res.ok) setNotes(data.notes);
       else setNotes('Notes error: ' + data.error);
     } catch {
-      setNotes('Error generating AI notes.');
+      setNotes('Notes error: Connection failed. Please retry.');
     } finally {
       setNotesLoading(false);
     }
@@ -143,10 +149,63 @@ function TranscriptWorkspace() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Simple Clean Header */}
-      <header className="border-b border-slate-800/80 bg-slate-900/60">
-        <div className="max-w-6xl mx-auto px-4 py-3.5 flex items-center justify-between">
+    <div
+      className={`relative min-h-screen overflow-hidden flex flex-col transition-colors duration-700 ${
+        isDark ? 'bg-[#090807] text-[#F5F2EB]' : 'bg-[#F7F5F0] text-[#181614]'
+      }`}
+    >
+      {/* Custom Slow Blur & Ambient Drift Keyframes */}
+      <style>{`
+        @keyframes driftSlow {
+          0%, 100% { transform: translate(0px, 0px) scale(1); }
+          33% { transform: translate(45px, -35px) scale(1.08); }
+          66% { transform: translate(-35px, 25px) scale(0.95); }
+        }
+        @keyframes driftReverse {
+          0%, 100% { transform: translate(0px, 0px) scale(1); }
+          50% { transform: translate(-50px, -30px) scale(1.1); }
+        }
+        @keyframes blurReveal {
+          0% { opacity: 0; filter: blur(12px); transform: translateY(12px); }
+          100% { opacity: 1; filter: blur(0px); transform: translateY(0px); }
+        }
+        .animate-drift-slow { animation: driftSlow 18s ease-in-out infinite; }
+        .animate-drift-reverse { animation: driftReverse 22s ease-in-out infinite; }
+        .animate-blur-in { animation: blurReveal 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+      `}</style>
+
+      {/* Moving Ambient Blurred Background Orbs */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
+        {/* Warm Bronze / Amber Halo Glow */}
+        <div
+          className={`animate-drift-slow absolute -top-32 left-1/4 w-[520px] h-[520px] rounded-full blur-[140px] transition-opacity duration-700 ${
+            isDark ? 'bg-amber-600/20' : 'bg-amber-400/30'
+          }`}
+        />
+        {/* Deep Terracotta / Copper Accent Glow */}
+        <div
+          className={`animate-drift-reverse absolute top-1/3 -right-24 w-[480px] h-[480px] rounded-full blur-[150px] transition-opacity duration-700 ${
+            isDark ? 'bg-orange-800/20' : 'bg-teal-400/25'
+          }`}
+        />
+        {/* Bottom Subtle Glow */}
+        <div
+          className={`animate-drift-slow absolute -bottom-36 left-10 w-[450px] h-[450px] rounded-full blur-[140px] transition-opacity duration-700 ${
+            isDark ? 'bg-stone-700/25' : 'bg-amber-300/25'
+          }`}
+        />
+      </div>
+
+      {/* Floating Glass Navbar */}
+      <header className="relative z-20 pt-5 px-4">
+        <div
+          className={`max-w-6xl mx-auto px-5 py-3 rounded-2xl backdrop-blur-2xl border flex items-center justify-between transition-all ${
+            isDark
+              ? 'bg-white/[0.04] border-white/[0.1] shadow-[0_8px_32px_rgba(0,0,0,0.4)]'
+              : 'bg-white/70 border-stone-200/80 shadow-[0_8px_32px_rgba(0,0,0,0.06)]'
+          }`}
+        >
+          {/* Brand Logo */}
           <div
             onClick={() => {
               setVideoId('');
@@ -155,94 +214,208 @@ function TranscriptWorkspace() {
               setError('');
               router.push('/');
             }}
-            className="flex items-center gap-2 cursor-pointer"
+            className="flex items-center gap-3 cursor-pointer group"
           >
-            <div className="bg-red-600 p-1.5 rounded-lg">
+            <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-2 rounded-xl shadow-md group-hover:scale-105 transition">
               <PlaySquare className="w-5 h-5 text-white" />
             </div>
-            <span className="font-bold text-lg tracking-tight">YT Transcript & Notes</span>
+            <div>
+              <span className="font-bold text-lg md:text-xl tracking-tight block leading-none">
+                YT Transcript AI
+              </span>
+              <span
+                className={`text-[11px] tracking-widest uppercase ${
+                  isDark ? 'text-amber-400/80' : 'text-amber-700'
+                }`}
+              >
+                Created by VisionCut Studio
+              </span>
+            </div>
           </div>
-          <span className="text-xs text-slate-400">Free & Instant</span>
+
+          {/* Right Controls: Theme Switcher */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              aria-label="Toggle Theme"
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs md:text-sm font-medium border backdrop-blur-xl transition cursor-pointer ${
+                isDark
+                  ? 'bg-white/[0.06] border-white/[0.12] text-amber-200 hover:bg-white/[0.12]'
+                  : 'bg-stone-900 text-amber-100 border-stone-800 hover:bg-stone-800'
+              }`}
+            >
+              {isDark ? (
+                <>
+                  <Sun className="w-4 h-4 text-amber-400" />
+                  <span>Bright</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-4 h-4 text-amber-300" />
+                  <span>Dark</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </header>
 
-      {/* Center Hero & Input Box (Jab tak result load na ho, bilkul screen ke beech mein) */}
+      {/* Center Hero & Input Box */}
       {!videoId || segments.length === 0 ? (
-        <main className="flex-1 flex flex-col items-center justify-center px-4 py-12">
-          <div className="w-full max-w-2xl text-center space-y-6">
-            <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight">
-              YouTube Video to Transcript
+        <main className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-12">
+          <div className="w-full max-w-3xl text-center space-y-7 animate-blur-in">
+            {/* Subtle Pill Tag */}
+            <div
+              className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs md:text-sm font-medium tracking-wide border backdrop-blur-xl ${
+                isDark
+                  ? 'bg-amber-500/10 border-amber-400/20 text-amber-300'
+                  : 'bg-amber-500/15 border-amber-600/20 text-amber-900'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Instant Transcripts & AI Study Notes</span>
+            </div>
+
+            <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight leading-[1.12]">
+              Turn Any YouTube Video Into{' '}
+              <span className="bg-gradient-to-r from-amber-400 via-orange-400 to-amber-200 bg-clip-text text-transparent">
+                Clean Notes.
+              </span>
             </h1>
-            <p className="text-slate-400 text-base md:text-lg">
-              Paste a YouTube video link below to get the full timestamped transcript and AI notes in seconds.
+
+            <p
+              className={`text-base md:text-xl max-w-2xl mx-auto leading-relaxed ${
+                isDark ? 'text-stone-400' : 'text-stone-600'
+              }`}
+            >
+              Paste any YouTube link below to extract clickable timestamped transcripts in 1 second and generate structured AI summaries effortlessly.
             </p>
 
-            {/* Centered Search / URL Input Box */}
-            <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2.5 w-full">
+            {/* Glass Input Container */}
+            <form
+              onSubmit={handleSubmit}
+              className={`p-2.5 rounded-2xl border backdrop-blur-2xl flex flex-col sm:flex-row gap-2.5 transition-all ${
+                isDark
+                  ? 'bg-white/[0.05] border-white/[0.12] shadow-[0_20px_50px_rgba(0,0,0,0.5)]'
+                  : 'bg-white/80 border-stone-300/80 shadow-[0_20px_50px_rgba(0,0,0,0.08)]'
+              }`}
+            >
               <input
                 type="text"
                 required
-                placeholder="https://www.youtube.com/watch?v=lF6MOx6BxXM"
+                placeholder="Paste YouTube link here (e.g., https://youtu.be/lF6MOx6BxXM)"
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
-                className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base text-slate-100 placeholder-slate-500 focus:outline-none focus:border-red-500 shadow-lg"
+                className={`flex-1 bg-transparent px-4 py-3.5 text-base md:text-lg focus:outline-none ${
+                  isDark
+                    ? 'text-white placeholder-stone-500'
+                    : 'text-stone-900 placeholder-stone-400'
+                }`}
               />
               <button
                 type="submit"
                 disabled={loading}
-                className="bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white font-semibold px-7 py-3.5 rounded-xl transition cursor-pointer shrink-0 shadow-lg"
+                className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 disabled:opacity-60 text-stone-950 font-bold text-base md:text-lg px-8 py-3.5 rounded-xl transition cursor-pointer shrink-0 flex items-center justify-center gap-2 shadow-lg"
               >
-                {loading ? 'Fetching...' : 'Get Transcript'}
+                {loading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>Fetching...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Get Transcript</span>
+                    <ArrowUpRight className="w-5 h-5" />
+                  </>
+                )}
               </button>
             </form>
 
             {error && (
-              <div className="bg-red-950/70 border border-red-800 text-red-300 px-4 py-3 rounded-xl text-sm text-left">
+              <div className="bg-red-950/70 border border-red-500/40 text-red-200 px-5 py-3.5 rounded-2xl text-sm md:text-base text-left backdrop-blur-xl">
                 {error}
               </div>
             )}
 
-            <div className="pt-2">
-              <button
-                type="button"
+            {/* Glass Feature Cards (Inspired by modern editorial glassmorphism) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-6 text-left">
+              <div
+                className={`p-5 rounded-2xl border backdrop-blur-2xl transition ${
+                  isDark
+                    ? 'bg-white/[0.03] border-white/[0.08] hover:bg-white/[0.06]'
+                    : 'bg-white/60 border-stone-200/80 hover:bg-white/90'
+                }`}
+              >
+                <div className="text-amber-400 font-semibold text-sm uppercase tracking-wider mb-1">
+                  01 • Lightning Speed
+                </div>
+                <p className={`text-sm md:text-base ${isDark ? 'text-stone-300' : 'text-stone-700'}`}>
+                  Click any timestamp to jump directly to that exact moment in the video player.
+                </p>
+              </div>
+
+              <div
                 onClick={() => {
                   const demoUrl = 'https://www.youtube.com/watch?v=lF6MOx6BxXM';
                   setInputUrl(demoUrl);
                   fetchTranscript(demoUrl);
                 }}
-                className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
+                className={`p-5 rounded-2xl border backdrop-blur-2xl cursor-pointer transition group ${
+                  isDark
+                    ? 'bg-white/[0.03] border-white/[0.08] hover:border-amber-400/40 hover:bg-white/[0.06]'
+                    : 'bg-white/60 border-stone-200/80 hover:border-amber-500/50 hover:bg-white/90'
+                }`}
               >
-                Test with sample video (lF6MOx6BxXM)
-              </button>
+                <div className="text-amber-400 font-semibold text-sm uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>02 • Try Instant Demo</span>
+                  <ArrowUpRight className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition" />
+                </div>
+                <p className={`text-sm md:text-base ${isDark ? 'text-stone-300' : 'text-stone-700'}`}>
+                  Click here to test sample video <span className="underline">lF6MOx6BxXM</span> right now.
+                </p>
+              </div>
             </div>
           </div>
         </main>
       ) : (
-        /* Result View (Jab transcript load ho jaye) */
-        <main className="max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
+        /* Split-Screen Workspace */
+        <main className="relative z-10 max-w-6xl w-full mx-auto px-4 py-6 space-y-6 animate-blur-in">
           {/* Compact Top Search Bar */}
-          <form onSubmit={handleSubmit} className="flex gap-2 max-w-3xl mx-auto">
+          <form
+            onSubmit={handleSubmit}
+            className={`flex gap-2.5 max-w-3xl mx-auto p-2 rounded-2xl border backdrop-blur-2xl ${
+              isDark
+                ? 'bg-white/[0.04] border-white/[0.1]'
+                : 'bg-white/80 border-stone-300/80'
+            }`}
+          >
             <input
               type="text"
               required
               placeholder="Paste another YouTube URL..."
               value={inputUrl}
               onChange={(e) => setInputUrl(e.target.value)}
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-red-500"
+              className={`flex-1 bg-transparent px-4 py-2 text-base focus:outline-none ${
+                isDark ? 'text-white placeholder-stone-500' : 'text-stone-900 placeholder-stone-400'
+              }`}
             />
             <button
               type="submit"
               disabled={loading}
-              className="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-5 py-2.5 rounded-xl cursor-pointer"
+              className="bg-gradient-to-r from-amber-500 to-orange-600 text-stone-950 font-bold text-sm md:text-base px-6 py-2.5 rounded-xl cursor-pointer"
             >
               {loading ? 'Loading...' : 'Get Transcript'}
             </button>
           </form>
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left: Video Player + AI Notes */}
+            {/* Left: Video Player + AI Notes Generator */}
             <div className="lg:col-span-5 lg:sticky lg:top-6 space-y-4">
-              <div className="aspect-video w-full rounded-xl overflow-hidden border border-slate-800 bg-black shadow-lg">
+              <div
+                className={`aspect-video w-full rounded-2xl overflow-hidden border shadow-2xl ${
+                  isDark ? 'border-white/[0.12] bg-black' : 'border-stone-300 bg-black'
+                }`}
+              >
                 <iframe
                   className="w-full h-full"
                   src={`https://www.youtube.com/embed/${videoId}?start=${startTime}&autoplay=${startTime > 0 ? 1 : 0}`}
@@ -252,10 +425,16 @@ function TranscriptWorkspace() {
                 />
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+              <div
+                className={`rounded-2xl p-5 border backdrop-blur-2xl space-y-4 ${
+                  isDark
+                    ? 'bg-white/[0.04] border-white/[0.1]'
+                    : 'bg-white/75 border-stone-200/90 shadow-lg'
+                }`}
+              >
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
-                    <Sparkles className="w-4 h-4 text-amber-400" />
+                  <span className="text-base font-bold flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-amber-400" />
                     AI Study Notes
                   </span>
                   <select
@@ -264,7 +443,11 @@ function TranscriptWorkspace() {
                       setLanguage(e.target.value);
                       setNotes('');
                     }}
-                    className="bg-slate-950 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-300"
+                    className={`border rounded-xl px-3 py-1.5 text-sm font-medium focus:outline-none ${
+                      isDark
+                        ? 'bg-stone-900 border-white/[0.15] text-stone-200'
+                        : 'bg-white border-stone-300 text-stone-800'
+                    }`}
                   >
                     <option value="English">English</option>
                     <option value="Hindi">Hindi</option>
@@ -274,12 +457,12 @@ function TranscriptWorkspace() {
                 <button
                   onClick={handleGenerateNotes}
                   disabled={notesLoading}
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-2.5 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"
+                  className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-stone-950 text-base font-bold py-3 rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-md"
                 >
                   {notesLoading ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Generating Notes...
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <span>Generating Notes...</span>
                     </>
                   ) : (
                     'Generate AI Summary & Notes'
@@ -288,14 +471,28 @@ function TranscriptWorkspace() {
               </div>
             </div>
 
-            {/* Right: Transcript / Notes */}
-            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
-              <div className="p-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex gap-1.5">
+            {/* Right: Transcript / Notes Glass Panel */}
+            <div
+              className={`lg:col-span-7 rounded-2xl border backdrop-blur-2xl overflow-hidden shadow-2xl ${
+                isDark
+                  ? 'bg-white/[0.04] border-white/[0.1]'
+                  : 'bg-white/80 border-stone-200/90'
+              }`}
+            >
+              <div
+                className={`p-4 border-b flex flex-wrap items-center justify-between gap-2 ${
+                  isDark ? 'border-white/[0.08]' : 'border-stone-200'
+                }`}
+              >
+                <div className="flex gap-2">
                   <button
                     onClick={() => setViewMode('transcript')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer ${
-                      viewMode === 'transcript' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-300'
+                    className={`px-4 py-2 rounded-xl text-sm font-semibold cursor-pointer transition ${
+                      viewMode === 'transcript'
+                        ? 'bg-amber-500 text-stone-950'
+                        : isDark
+                        ? 'bg-white/[0.06] text-stone-300 hover:bg-white/[0.12]'
+                        : 'bg-stone-200/70 text-stone-700'
                     }`}
                   >
                     Transcript ({segments.length})
@@ -303,8 +500,12 @@ function TranscriptWorkspace() {
                   {notes && (
                     <button
                       onClick={() => setViewMode('notes')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer ${
-                        viewMode === 'notes' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-300'
+                      className={`px-4 py-2 rounded-xl text-sm font-semibold cursor-pointer transition ${
+                        viewMode === 'notes'
+                          ? 'bg-amber-500 text-stone-950'
+                          : isDark
+                          ? 'bg-white/[0.06] text-stone-300 hover:bg-white/[0.12]'
+                          : 'bg-stone-200/70 text-stone-700'
                       }`}
                     >
                       AI Notes
@@ -316,47 +517,71 @@ function TranscriptWorkspace() {
                   {viewMode === 'transcript' && (
                     <button
                       onClick={() => setShowTimestamps(!showTimestamps)}
-                      className="flex items-center gap-1 text-xs bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg text-slate-300 cursor-pointer"
+                      className={`flex items-center gap-1.5 text-xs md:text-sm px-3 py-2 rounded-xl border cursor-pointer transition ${
+                        isDark
+                          ? 'bg-white/[0.05] border-white/[0.1] text-stone-300 hover:bg-white/[0.1]'
+                          : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-100'
+                      }`}
                     >
-                      <Clock className="w-3.5 h-3.5" />
+                      <Clock className="w-4 h-4" />
                       {showTimestamps ? 'Hide Time' : 'Show Time'}
                     </button>
                   )}
                   <button
                     onClick={handleCopy}
-                    className="flex items-center gap-1 text-xs bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg text-slate-200 cursor-pointer"
+                    className={`flex items-center gap-1.5 text-xs md:text-sm px-3 py-2 rounded-xl border cursor-pointer transition ${
+                      isDark
+                        ? 'bg-white/[0.05] border-white/[0.1] text-stone-200 hover:bg-white/[0.1]'
+                        : 'bg-white border-stone-300 text-stone-800 hover:bg-stone-100'
+                    }`}
                   >
-                    {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                   <button
                     onClick={handleDownload}
-                    className="flex items-center gap-1 text-xs bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg text-slate-200 cursor-pointer"
+                    className={`flex items-center gap-1.5 text-xs md:text-sm px-3 py-2 rounded-xl border cursor-pointer transition ${
+                      isDark
+                        ? 'bg-white/[0.05] border-white/[0.1] text-stone-200 hover:bg-white/[0.1]'
+                        : 'bg-white border-stone-300 text-stone-800 hover:bg-stone-100'
+                    }`}
                   >
-                    <Download className="w-3.5 h-3.5" />
+                    <Download className="w-4 h-4" />
                     .TXT
                   </button>
                 </div>
               </div>
 
               {viewMode === 'transcript' && (
-                <div className="p-3 border-b border-slate-800 bg-slate-950/50">
+                <div
+                  className={`p-3.5 border-b ${
+                    isDark ? 'border-white/[0.08] bg-black/20' : 'border-stone-200 bg-stone-50/70'
+                  }`}
+                >
                   <div className="relative">
-                    <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                    <Search className="w-4 h-4 text-stone-400 absolute left-3.5 top-3" />
                     <input
                       type="text"
                       placeholder="Search words in transcript..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-slate-600"
+                      className={`w-full rounded-xl pl-10 pr-4 py-2 text-base border focus:outline-none ${
+                        isDark
+                          ? 'bg-white/[0.04] border-white/[0.1] text-white placeholder-stone-500'
+                          : 'bg-white border-stone-300 text-stone-900 placeholder-stone-400'
+                      }`}
                     />
                   </div>
                 </div>
               )}
 
-              <div className="p-4 max-h-[650px] overflow-y-auto space-y-2">
+              <div className="p-5 max-h-[650px] overflow-y-auto space-y-2.5">
                 {viewMode === 'notes' ? (
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">
+                  <div
+                    className={`whitespace-pre-wrap text-base md:text-lg leading-relaxed animate-blur-in ${
+                      isDark ? 'text-stone-200' : 'text-stone-800'
+                    }`}
+                  >
                     {notes}
                   </div>
                 ) : (
@@ -364,14 +589,28 @@ function TranscriptWorkspace() {
                     <div
                       key={idx}
                       onClick={() => setStartTime(seg.offset)}
-                      className="group flex items-start gap-3 p-2 rounded-lg hover:bg-slate-800/70 cursor-pointer transition"
+                      className={`group flex items-start gap-3.5 p-2.5 rounded-xl cursor-pointer transition ${
+                        isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-amber-500/10'
+                      }`}
                     >
                       {showTimestamps && (
-                        <span className="text-xs font-mono text-red-400 bg-red-950/50 px-2 py-0.5 rounded shrink-0 mt-0.5 group-hover:bg-red-600 group-hover:text-white transition">
+                        <span
+                          className={`text-xs md:text-sm font-mono px-2.5 py-1 rounded-lg shrink-0 mt-0.5 transition ${
+                            isDark
+                              ? 'text-amber-300 bg-amber-500/15 group-hover:bg-amber-500 group-hover:text-stone-950'
+                              : 'text-amber-800 bg-amber-500/20 group-hover:bg-amber-500 group-hover:text-white'
+                          }`}
+                        >
                           {formatTime(seg.offset)}
                         </span>
                       )}
-                      <p className="text-sm text-slate-300 leading-relaxed">{seg.text}</p>
+                      <p
+                        className={`text-base md:text-[17px] leading-relaxed ${
+                          isDark ? 'text-stone-200' : 'text-stone-800'
+                        }`}
+                      >
+                        {seg.text}
+                      </p>
                     </div>
                   ))
                 )}
@@ -380,13 +619,20 @@ function TranscriptWorkspace() {
           </div>
         </main>
       )}
+
+      {/* Footer with VisionCut Studio Branding */}
+      <footer className="relative z-10 py-6 text-center">
+        <p className={`text-xs md:text-sm tracking-wide ${isDark ? 'text-stone-500' : 'text-stone-500'}`}>
+          Created by <span className="font-semibold text-amber-500">VisionCut Studio</span> • Built for Creators & Learners
+        </p>
+      </footer>
     </div>
   );
 }
 
 export default function Home() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-slate-950 text-white p-10">Loading...</div>}>
+    <Suspense fallback={<div className="min-h-screen bg-[#090807] text-white p-10">Loading...</div>}>
       <TranscriptWorkspace />
     </Suspense>
   );
