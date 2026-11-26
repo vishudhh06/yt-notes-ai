@@ -43,7 +43,6 @@ function TranscriptWorkspace() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
-  // AI Notes states
   const [notes, setNotes] = useState('');
   const [notesLoading, setNotesLoading] = useState(false);
   const [language, setLanguage] = useState('English');
@@ -110,7 +109,7 @@ function TranscriptWorkspace() {
       });
       const data = await res.json();
       if (res.ok) setNotes(data.notes);
-      else setNotes('Notes generate nahi ho paye: ' + data.error);
+      else setNotes('Notes error: ' + data.error);
     } catch {
       setNotes('Error generating AI notes.');
     } finally {
@@ -144,77 +143,105 @@ function TranscriptWorkspace() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      {/* Top Navbar */}
-      <header className="border-b border-slate-800 bg-slate-900/90 sticky top-0 z-20">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col md:flex-row items-center gap-3">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+      {/* Simple Clean Header */}
+      <header className="border-b border-slate-800/80 bg-slate-900/60">
+        <div className="max-w-6xl mx-auto px-4 py-3.5 flex items-center justify-between">
           <div
             onClick={() => {
               setVideoId('');
               setSegments([]);
+              setInputUrl('');
+              setError('');
               router.push('/');
             }}
-            className="flex items-center gap-2 cursor-pointer shrink-0"
+            className="flex items-center gap-2 cursor-pointer"
           >
             <div className="bg-red-600 p-1.5 rounded-lg">
               <PlaySquare className="w-5 h-5 text-white" />
             </div>
             <span className="font-bold text-lg tracking-tight">YT Transcript & Notes</span>
           </div>
+          <span className="text-xs text-slate-400">Free & Instant</span>
+        </div>
+      </header>
 
-          <form onSubmit={handleSubmit} className="flex-1 flex w-full gap-2">
+      {/* Center Hero & Input Box (Jab tak result load na ho, bilkul screen ke beech mein) */}
+      {!videoId || segments.length === 0 ? (
+        <main className="flex-1 flex flex-col items-center justify-center px-4 py-12">
+          <div className="w-full max-w-2xl text-center space-y-6">
+            <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight">
+              YouTube Video to Transcript
+            </h1>
+            <p className="text-slate-400 text-base md:text-lg">
+              Paste a YouTube video link below to get the full timestamped transcript and AI notes in seconds.
+            </p>
+
+            {/* Centered Search / URL Input Box */}
+            <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2.5 w-full">
+              <input
+                type="text"
+                required
+                placeholder="https://www.youtube.com/watch?v=lF6MOx6BxXM"
+                value={inputUrl}
+                onChange={(e) => setInputUrl(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3.5 text-base text-slate-100 placeholder-slate-500 focus:outline-none focus:border-red-500 shadow-lg"
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white font-semibold px-7 py-3.5 rounded-xl transition cursor-pointer shrink-0 shadow-lg"
+              >
+                {loading ? 'Fetching...' : 'Get Transcript'}
+              </button>
+            </form>
+
+            {error && (
+              <div className="bg-red-950/70 border border-red-800 text-red-300 px-4 py-3 rounded-xl text-sm text-left">
+                {error}
+              </div>
+            )}
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const demoUrl = 'https://www.youtube.com/watch?v=lF6MOx6BxXM';
+                  setInputUrl(demoUrl);
+                  fetchTranscript(demoUrl);
+                }}
+                className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
+              >
+                Test with sample video (lF6MOx6BxXM)
+              </button>
+            </div>
+          </div>
+        </main>
+      ) : (
+        /* Result View (Jab transcript load ho jaye) */
+        <main className="max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
+          {/* Compact Top Search Bar */}
+          <form onSubmit={handleSubmit} className="flex gap-2 max-w-3xl mx-auto">
             <input
               type="text"
               required
-              placeholder="Paste YouTube URL or Video ID (e.g., https://youtu.be/lF6MOx6BxXM)"
+              placeholder="Paste another YouTube URL..."
               value={inputUrl}
               onChange={(e) => setInputUrl(e.target.value)}
-              className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-red-500"
+              className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-red-500"
             />
             <button
               type="submit"
               disabled={loading}
-              className="bg-red-600 hover:bg-red-700 disabled:bg-red-800 text-white text-sm font-semibold px-5 py-2 rounded-lg transition cursor-pointer shrink-0"
+              className="bg-red-600 hover:bg-red-700 text-white text-sm font-semibold px-5 py-2.5 rounded-xl cursor-pointer"
             >
               {loading ? 'Loading...' : 'Get Transcript'}
             </button>
           </form>
-        </div>
-      </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8">
-        {error && (
-          <div className="bg-red-950/60 border border-red-800 text-red-300 px-4 py-3 rounded-xl mb-6 text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Landing Hero (Jab koi video open na ho) */}
-        {!videoId && !loading && (
-          <div className="text-center py-16 max-w-2xl mx-auto">
-            <h1 className="text-4xl font-extrabold mb-4">
-              Free YouTube Transcript & AI Notes Generator
-            </h1>
-            <p className="text-slate-400 mb-8">
-              Kisi bhi YouTube video ka link upar paste karein aur 1 second mein clickable timestamps ke saath full transcript aur AI study notes payein.
-            </p>
-            <button
-              onClick={() => {
-                setInputUrl('https://www.youtube.com/watch?v=lF6MOx6BxXM');
-                fetchTranscript('lF6MOx6BxXM');
-              }}
-              className="text-sm bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg border border-slate-700 cursor-pointer"
-            >
-              Try Demo Video (lF6MOx6BxXM)
-            </button>
-          </div>
-        )}
-
-        {/* Split Workspace (Video Left + Interactive Transcript Right) */}
-        {videoId && segments.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Column: Embedded Video + AI Summary Controls */}
-            <div className="lg:col-span-5 lg:sticky lg:top-20 space-y-4">
+            {/* Left: Video Player + AI Notes */}
+            <div className="lg:col-span-5 lg:sticky lg:top-6 space-y-4">
               <div className="aspect-video w-full rounded-xl overflow-hidden border border-slate-800 bg-black shadow-lg">
                 <iframe
                   className="w-full h-full"
@@ -225,7 +252,6 @@ function TranscriptWorkspace() {
                 />
               </div>
 
-              {/* AI Notes Box */}
               <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
@@ -253,7 +279,7 @@ function TranscriptWorkspace() {
                   {notesLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      Creating Notes...
+                      Generating Notes...
                     </>
                   ) : (
                     'Generate AI Summary & Notes'
@@ -262,10 +288,9 @@ function TranscriptWorkspace() {
               </div>
             </div>
 
-            {/* Right Column: Searchable Timestamped Transcript / Notes */}
+            {/* Right: Transcript / Notes */}
             <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
-              {/* Toolbar */}
-              <div className="p-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 bg-slate-900/95">
+              <div className="p-3 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2">
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => setViewMode('transcript')}
@@ -292,7 +317,6 @@ function TranscriptWorkspace() {
                     <button
                       onClick={() => setShowTimestamps(!showTimestamps)}
                       className="flex items-center gap-1 text-xs bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 rounded-lg text-slate-300 cursor-pointer"
-                      title="Toggle Timestamps"
                     >
                       <Clock className="w-3.5 h-3.5" />
                       {showTimestamps ? 'Hide Time' : 'Show Time'}
@@ -315,7 +339,6 @@ function TranscriptWorkspace() {
                 </div>
               </div>
 
-              {/* Search Inside Transcript */}
               {viewMode === 'transcript' && (
                 <div className="p-3 border-b border-slate-800 bg-slate-950/50">
                   <div className="relative">
@@ -331,7 +354,6 @@ function TranscriptWorkspace() {
                 </div>
               )}
 
-              {/* Content Display */}
               <div className="p-4 max-h-[650px] overflow-y-auto space-y-2">
                 {viewMode === 'notes' ? (
                   <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-200">
@@ -356,8 +378,8 @@ function TranscriptWorkspace() {
               </div>
             </div>
           </div>
-        )}
-      </main>
+        </main>
+      )}
     </div>
   );
 }
