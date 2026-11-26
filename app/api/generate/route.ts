@@ -5,11 +5,12 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 function extractVideoId(input: string) {
   if (/^[a-zA-Z0-9_-]{11}$/.test(input.trim())) return input.trim();
-  const match = input.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/);
-  return match && match[2].length === 11 ? match[2] : null;
+  const match = input.match(
+    /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
+  );
+  return match ? match[1] : null;
 }
 
-// Auto-fallback across models so 503 high-demand error never breaks notes
 async function generateNotesWithFallback(prompt: string) {
   const models = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
   let lastError: any = null;
@@ -25,77 +26,166 @@ async function generateNotesWithFallback(prompt: string) {
       if (text) return text;
     } catch (err: any) {
       lastError = err;
-      // Short pause before trying backup model
       await new Promise((r) => setTimeout(r, 800));
     }
   }
   throw lastError || new Error('AI servers abhi busy hain, 10 second baad dobara try karein.');
 }
 
+// Clean Web Article Extractor (smry.ai style via Jina Reader + Direct HTML fallback)
+async function fetchWebArticle(targetUrl: string) {
+  let formattedUrl = targetUrl.trim();
+  if (!/^https?:\/\//i.test(formattedUrl)) {
+    formattedUrl = `https://${formattedUrl}`;
+  }
+
+  // Primary: Fast clean markdown reader extraction
+  try {
+    const readerRes = await fetch(`https://r.jina.ai/${formattedUrl}`, {
+      headers: {
+        Accept: 'text/plain',
+        'X-Return-Format': 'markdown',
+      },
+    });
+    if (readerRes.ok) {
+      const rawText = await readerRes.text();
+      if (rawText && rawText.length > 200) {
+        const titleMatch = rawText.match(/^Title:\s*(.+)$/m);
+        const title = titleMatch ? titleMatch[1].trim() : new URL(formattedUrl).hostname;
+        const cleanBody = rawText
+          .replace(/^Title:.*$/m, '')
+          .replace(/^URL Source:.*$/m, '')
+          .replace(/^Markdown Content:.*$/m, '')
+          .trim();
+
+        const wordCount = cleanBody.split(/\s+/).length;
+        return {
+          type: 'article' as const,
+          url: formattedUrl,
+          title,
+          wordCount,
+          readTime: Math.max(1, Math.ceil(wordCount / 200)),
+          content: cleanBody,
+        };
+      }
+    }
+  } catch {
+    // Fallback to direct HTML fetch
+  }
+
+  // Fallback: Direct HTML text extraction
+  const res = await fetch(formattedUrl, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error('Is webpage ko read nahi kiya ja saka. Link check karein.');
+  }
+
+  const html = await res.text();
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : formattedUrl;
+
+  const textOnly = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<\/(p|div|h1|h2|h3|h4|li|br)>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (textOnly.length < 100) {
+    throw new Error('Is page par readable article content nahi mila.');
+  }
+
+  const wordCount = textOnly.split(/\s+/).length;
+  return {
+    type: 'article' as const,
+    url: formattedUrl,
+    title,
+    wordCount,
+    readTime: Math.max(1, Math.ceil(wordCount / 200)),
+    content: textOnly,
+  };
+}
+
 export async function POST(req: Request) {
   try {
     const { url, action, language, transcriptText } = await req.json();
 
+    // Generate AI Summary (Works for both YouTube & Articles)
     if (action === 'summarize') {
       if (!transcriptText) {
-        return NextResponse.json({ error: 'Transcript empty hai.' }, { status: 400 });
+        return NextResponse.json({ error: 'Content empty hai.' }, { status: 400 });
       }
-      const prompt = `You are an expert study assistant. Create clean, well-structured, easy-to-read notes in ${language || 'English'} from the YouTube transcript below.
+      const prompt = `You are an expert study and reading assistant. Create a crystal-clear, structured summary in ${language || 'English'} from the content below.
 
 Format clearly with:
-- **Quick Overview** (3-4 crisp lines)
-- **Key Takeaways & Insights** (Clear bullet points)
-- **Actionable Summary**
+- **TL;DR (Quick Summary)** (3-4 crisp lines)
+- **Key Points & Takeaways** (Clear bullet points)
+- **Important Conclusion**
 
-Transcript:
-${transcriptText.slice(0, 35000)}`;
+Content:
+${transcriptText.slice(0, 40000)}`;
 
       const notes = await generateNotesWithFallback(prompt);
       return NextResponse.json({ notes });
     }
 
+    if (!url || !url.trim()) {
+      return NextResponse.json({ error: 'Koi valid YouTube ya Article URL paste karein.' }, { status: 400 });
+    }
+
     const videoId = extractVideoId(url);
-    if (!videoId) {
-      return NextResponse.json({ error: 'Invalid YouTube URL.' }, { status: 400 });
-    }
 
-    if (!process.env.SUPADATA_API_KEY) {
-      return NextResponse.json(
-        { error: 'Vercel Environment Variables mein SUPADATA_API_KEY add karein.' },
-        { status: 500 }
-      );
-    }
-
-    const ytUrl = encodeURIComponent(`https://youtu.be/${videoId}`);
-    const apiRes = await fetch(
-      `https://api.supadata.ai/v1/transcript?url=${ytUrl}&text=false`,
-      {
-        headers: {
-          'x-api-key': process.env.SUPADATA_API_KEY,
-        },
+    // Branch 1: YouTube Video URL
+    if (videoId) {
+      if (!process.env.SUPADATA_API_KEY) {
+        return NextResponse.json(
+          { error: 'Vercel Environment Variables mein SUPADATA_API_KEY add karein.' },
+          { status: 500 }
+        );
       }
-    );
 
-    const data = await apiRes.json();
-
-    if (!apiRes.ok || !data?.content) {
-      return NextResponse.json(
-        { error: data?.message || 'Is video ka transcript available nahi hai.' },
-        { status: 404 }
+      const ytUrl = encodeURIComponent(`https://youtu.be/${videoId}`);
+      const apiRes = await fetch(
+        `https://api.supadata.ai/v1/transcript?url=${ytUrl}&text=false`,
+        {
+          headers: { 'x-api-key': process.env.SUPADATA_API_KEY },
+        }
       );
+
+      const data = await apiRes.json();
+      if (!apiRes.ok || !data?.content) {
+        return NextResponse.json(
+          { error: data?.message || 'Is YouTube video ka transcript available nahi hai.' },
+          { status: 404 }
+        );
+      }
+
+      const segments = Array.isArray(data.content)
+        ? data.content.map((item: any) => ({
+            offset: Math.floor((item.offset || 0) / 1000),
+            text: (item.text || '').replace(/\n/g, ' ').trim(),
+          }))
+        : [{ offset: 0, text: String(data.content).trim() }];
+
+      return NextResponse.json({ type: 'youtube', videoId, segments });
     }
 
-    const segments = Array.isArray(data.content)
-      ? data.content.map((item: any) => ({
-          offset: Math.floor((item.offset || 0) / 1000),
-          text: (item.text || '').replace(/\n/g, ' ').trim(),
-        }))
-      : [{ offset: 0, text: String(data.content).trim() }];
-
-    return NextResponse.json({ videoId, segments });
+    // Branch 2: Any Web Article / Blog / News URL (smry.ai mode)
+    const articleData = await fetchWebArticle(url);
+    return NextResponse.json(articleData);
   } catch (error: any) {
     return NextResponse.json(
-      { error: error?.message || 'Request failed. Please try again.' },
+      { error: error?.message || 'Content fetch failed. Please check the link and retry.' },
       { status: 500 }
     );
   }

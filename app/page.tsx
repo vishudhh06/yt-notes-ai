@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
-  PlaySquare,
+  BookOpen,
   Search,
   Copy,
   Check,
@@ -15,11 +15,21 @@ import {
   Moon,
   ArrowUpRight,
   ClipboardPaste,
+  ExternalLink,
+  FileText,
 } from 'lucide-react';
 
 interface Segment {
   text: string;
   offset: number;
+}
+
+interface ArticleData {
+  url: string;
+  title: string;
+  wordCount: number;
+  readTime: number;
+  content: string;
 }
 
 function formatTime(seconds: number) {
@@ -32,18 +42,27 @@ function formatTime(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-function TranscriptWorkspace() {
+function ReaderWorkspace() {
   const searchParams = useSearchParams();
-  const initialParam = searchParams.get('v');
+  const initialVideo = searchParams.get('v');
+  const initialUrl = searchParams.get('url');
   const initializedRef = useRef(false);
 
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [inputUrl, setInputUrl] = useState('');
+  const [modeType, setModeType] = useState<'none' | 'youtube' | 'article'>('none');
+
+  // YouTube state
   const [videoId, setVideoId] = useState('');
   const [startTime, setStartTime] = useState(0);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
   const [showTimestamps, setShowTimestamps] = useState(true);
+
+  // Article state (smry.ai mode)
+  const [article, setArticle] = useState<ArticleData | null>(null);
+
+  // Shared states
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -51,34 +70,45 @@ function TranscriptWorkspace() {
   const [notes, setNotes] = useState('');
   const [notesLoading, setNotesLoading] = useState(false);
   const [language, setLanguage] = useState('English');
-  const [viewMode, setViewMode] = useState<'transcript' | 'notes'>('transcript');
+  const [viewMode, setViewMode] = useState<'reader' | 'notes'>('reader');
 
   const isDark = theme === 'dark';
 
-  const fetchTranscript = async (target: string) => {
+  const fetchContent = async (target: string) => {
     const cleanTarget = target.trim();
     if (!cleanTarget) return;
 
     setLoading(true);
     setError('');
     setNotes('');
-    setViewMode('transcript');
+    setViewMode('reader');
 
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: cleanTarget, action: 'transcript' }),
+        body: JSON.stringify({ url: cleanTarget, action: 'fetch' }),
       });
       const data = await res.json();
+
       if (!res.ok) {
-        setError(data.error || 'Transcript nahi mil paya.');
-      } else {
+        setError(data.error || 'Content load nahi ho paya.');
+      } else if (data.type === 'youtube') {
+        setModeType('youtube');
         setVideoId(data.videoId);
         setSegments(data.segments);
+        setArticle(null);
         setStartTime(0);
         if (typeof window !== 'undefined') {
           window.history.replaceState(null, '', `/?v=${data.videoId}`);
+        }
+      } else if (data.type === 'article') {
+        setModeType('article');
+        setArticle(data);
+        setVideoId('');
+        setSegments([]);
+        if (typeof window !== 'undefined') {
+          window.history.replaceState(null, '', `/?url=${encodeURIComponent(data.url)}`);
         }
       }
     } catch {
@@ -89,16 +119,22 @@ function TranscriptWorkspace() {
   };
 
   useEffect(() => {
-    if (initialParam && !initializedRef.current) {
+    if (initializedRef.current) return;
+    if (initialVideo) {
       initializedRef.current = true;
-      setInputUrl(`https://www.youtube.com/watch?v=${initialParam}`);
-      fetchTranscript(initialParam);
+      const yt = `https://www.youtube.com/watch?v=${initialVideo}`;
+      setInputUrl(yt);
+      fetchContent(yt);
+    } else if (initialUrl) {
+      initializedRef.current = true;
+      setInputUrl(initialUrl);
+      fetchContent(initialUrl);
     }
-  }, [initialParam]);
+  }, [initialVideo, initialUrl]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchTranscript(inputUrl);
+    fetchContent(inputUrl);
   };
 
   const handlePasteClick = async () => {
@@ -106,16 +142,18 @@ function TranscriptWorkspace() {
       const text = await navigator.clipboard.readText();
       if (text) {
         setInputUrl(text);
-        fetchTranscript(text);
+        fetchContent(text);
       }
     } catch {
-      setError('Browser clipboard permission blocked hai — box mein Ctrl+V se paste karein.');
+      setError('Browser clipboard blocked hai — input box mein Ctrl+V dabayein.');
     }
   };
 
   const handleResetHome = () => {
+    setModeType('none');
     setVideoId('');
     setSegments([]);
+    setArticle(null);
     setInputUrl('');
     setError('');
     setNotes('');
@@ -132,14 +170,18 @@ function TranscriptWorkspace() {
     setNotesLoading(true);
     setViewMode('notes');
     try {
-      const fullText = segments.map((s) => s.text).join(' ');
+      const rawContent =
+        modeType === 'youtube'
+          ? segments.map((s) => s.text).join(' ')
+          : article?.content || '';
+
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'summarize',
           language,
-          transcriptText: fullText,
+          transcriptText: rawContent,
         }),
       });
       const data = await res.json();
@@ -158,6 +200,9 @@ function TranscriptWorkspace() {
 
   const getPlainText = () => {
     if (viewMode === 'notes') return notes;
+    if (modeType === 'article' && article) {
+      return `${article.title}\nSource: ${article.url}\n\n${article.content}`;
+    }
     return filteredSegments
       .map((s) => (showTimestamps ? `[${formatTime(s.offset)}] ${s.text}` : s.text))
       .join('\n');
@@ -173,7 +218,8 @@ function TranscriptWorkspace() {
     const blob = new Blob([getPlainText()], { type: 'text/plain;charset=utf-8' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `${videoId || 'youtube'}-${viewMode}.txt`;
+    const slug = modeType === 'youtube' ? videoId : 'article';
+    link.download = `${slug}-${viewMode}.txt`;
     link.click();
   };
 
@@ -231,11 +277,11 @@ function TranscriptWorkspace() {
             className="flex items-center gap-3 cursor-pointer text-left group"
           >
             <div className="bg-gradient-to-br from-amber-500 to-orange-600 p-2 rounded-xl shadow-md group-hover:scale-105 transition">
-              <PlaySquare className="w-5 h-5 text-white" />
+              <BookOpen className="w-5 h-5 text-white" />
             </div>
             <div>
               <span className="font-bold text-lg md:text-xl tracking-tight block leading-none">
-                YT Transcript AI
+                SMRY & YT Reader AI
               </span>
               <span
                 className={`text-[11px] tracking-widest uppercase ${
@@ -271,8 +317,8 @@ function TranscriptWorkspace() {
         </div>
       </header>
 
-      {/* Main Content */}
-      {!videoId || segments.length === 0 ? (
+      {/* Center Hero & Input Box */}
+      {modeType === 'none' ? (
         <main className="relative z-20 flex-1 flex flex-col items-center justify-center px-4 py-12">
           <div className="w-full max-w-3xl text-center space-y-7">
             <div
@@ -283,13 +329,13 @@ function TranscriptWorkspace() {
               }`}
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Instant Transcripts & AI Study Notes</span>
+              <span>Read Any Article Cleanly • Transcribe Any YouTube Video</span>
             </div>
 
             <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold tracking-tight leading-[1.12]">
-              Turn Any YouTube Video Into{' '}
+              Summarize Any Link{' '}
               <span className="bg-gradient-to-r from-amber-400 via-orange-400 to-amber-200 bg-clip-text text-transparent">
-                Clean Notes.
+                In Seconds.
               </span>
             </h1>
 
@@ -298,7 +344,7 @@ function TranscriptWorkspace() {
                 isDark ? 'text-stone-400' : 'text-stone-600'
               }`}
             >
-              Paste any YouTube link below to extract clickable timestamped transcripts in 1 second and generate structured AI summaries effortlessly.
+              Paste any <strong>Web Article / Blog URL</strong> (like smry.ai) or any <strong>YouTube Video Link</strong> below for distraction-free reading, full transcripts, and instant AI notes.
             </p>
 
             {/* Input Form */}
@@ -315,7 +361,7 @@ function TranscriptWorkspace() {
                   type="text"
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="Paste YouTube link here (e.g., https://youtu.be/lF6MOx6BxXM)"
+                  placeholder="Paste any Article URL or YouTube link..."
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   className={`w-full bg-transparent px-4 py-3.5 text-base md:text-lg focus:outline-none ${
@@ -327,7 +373,6 @@ function TranscriptWorkspace() {
                 <button
                   type="button"
                   onClick={handlePasteClick}
-                  title="Paste from clipboard"
                   className={`px-3 py-2 rounded-xl text-xs font-medium flex items-center gap-1.5 shrink-0 border cursor-pointer transition ${
                     isDark
                       ? 'bg-white/[0.06] border-white/[0.12] text-stone-300 hover:bg-white/[0.12]'
@@ -347,11 +392,11 @@ function TranscriptWorkspace() {
                 {loading ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Fetching...</span>
+                    <span>Reading...</span>
                   </>
                 ) : (
                   <>
-                    <span>Get Transcript</span>
+                    <span>Read & Summarize</span>
                     <ArrowUpRight className="w-5 h-5" />
                   </>
                 )}
@@ -364,29 +409,14 @@ function TranscriptWorkspace() {
               </div>
             )}
 
-            {/* Glass Feature Cards */}
+            {/* Quick Sample Buttons (Article + YouTube) */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 text-left">
-              <div
-                className={`p-5 rounded-2xl border backdrop-blur-xl ${
-                  isDark
-                    ? 'bg-white/[0.03] border-white/[0.08]'
-                    : 'bg-white/70 border-stone-200/80'
-                }`}
-              >
-                <div className="text-amber-400 font-semibold text-sm uppercase tracking-wider mb-1">
-                  01 • Lightning Speed
-                </div>
-                <p className={`text-sm md:text-base ${isDark ? 'text-stone-300' : 'text-stone-700'}`}>
-                  Click any timestamp to jump directly to that exact moment in the video player.
-                </p>
-              </div>
-
               <button
                 type="button"
                 onClick={() => {
-                  const demoUrl = 'https://www.youtube.com/watch?v=lF6MOx6BxXM';
-                  setInputUrl(demoUrl);
-                  fetchTranscript(demoUrl);
+                  const sampleArticle = 'https://paulgraham.com/greatwork.html';
+                  setInputUrl(sampleArticle);
+                  fetchContent(sampleArticle);
                 }}
                 className={`p-5 rounded-2xl border backdrop-blur-xl cursor-pointer transition text-left group ${
                   isDark
@@ -395,20 +425,42 @@ function TranscriptWorkspace() {
                 }`}
               >
                 <div className="text-amber-400 font-semibold text-sm uppercase tracking-wider mb-1 flex items-center justify-between">
-                  <span>02 • Try Instant Demo</span>
+                  <span>01 • Test Article Reader</span>
                   <ArrowUpRight className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition" />
                 </div>
                 <p className={`text-sm md:text-base ${isDark ? 'text-stone-300' : 'text-stone-700'}`}>
-                  Click here to test sample video <span className="underline">lF6MOx6BxXM</span> right now.
+                  Read Paul Graham&apos;s essay in clean reader view + AI summary.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const demoUrl = 'https://www.youtube.com/watch?v=lF6MOx6BxXM';
+                  setInputUrl(demoUrl);
+                  fetchContent(demoUrl);
+                }}
+                className={`p-5 rounded-2xl border backdrop-blur-xl cursor-pointer transition text-left group ${
+                  isDark
+                    ? 'bg-white/[0.03] border-white/[0.08] hover:border-amber-400/40 hover:bg-white/[0.06]'
+                    : 'bg-white/70 border-stone-200/80 hover:border-amber-500/50 hover:bg-white'
+                }`}
+              >
+                <div className="text-amber-400 font-semibold text-sm uppercase tracking-wider mb-1 flex items-center justify-between">
+                  <span>02 • Test YouTube Transcript</span>
+                  <ArrowUpRight className="w-4 h-4 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition" />
+                </div>
+                <p className={`text-sm md:text-base ${isDark ? 'text-stone-300' : 'text-stone-700'}`}>
+                  Extract clickable timestamps from YouTube video <span className="underline">lF6MOx6BxXM</span>.
                 </p>
               </button>
             </div>
           </div>
         </main>
       ) : (
-        /* Split-Screen Workspace */
+        /* Split-Screen Workspace for Both Article & YouTube */
         <main className="relative z-20 max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
-          {/* Top Search Bar */}
+          {/* Top Bar */}
           <form
             onSubmit={handleSubmit}
             className={`relative z-30 flex flex-col sm:flex-row gap-2 max-w-3xl mx-auto p-2 rounded-2xl border backdrop-blur-xl ${
@@ -421,7 +473,7 @@ function TranscriptWorkspace() {
               <input
                 type="text"
                 autoComplete="off"
-                placeholder="Paste another YouTube URL..."
+                placeholder="Paste another Article URL or YouTube link..."
                 value={inputUrl}
                 onChange={(e) => setInputUrl(e.target.value)}
                 className={`w-full bg-transparent px-4 py-2 text-base focus:outline-none ${
@@ -446,7 +498,7 @@ function TranscriptWorkspace() {
               disabled={loading}
               className="bg-gradient-to-r from-amber-500 to-orange-600 text-stone-950 font-bold text-sm md:text-base px-6 py-2.5 rounded-xl cursor-pointer shrink-0"
             >
-              {loading ? 'Loading...' : 'Get Transcript'}
+              {loading ? 'Reading...' : 'Read & Summarize'}
             </button>
           </form>
 
@@ -457,22 +509,59 @@ function TranscriptWorkspace() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left: Video Player + AI Notes */}
+            {/* Left Sidebar: Video Player (for YouTube) OR Article Metadata (for Web URL) + AI Notes */}
             <div className="lg:col-span-5 lg:sticky lg:top-6 space-y-4">
-              <div
-                className={`aspect-video w-full rounded-2xl overflow-hidden border shadow-2xl ${
-                  isDark ? 'border-white/[0.12] bg-black' : 'border-stone-300 bg-black'
-                }`}
-              >
-                <iframe
-                  className="w-full h-full"
-                  src={`https://www.youtube.com/embed/${videoId}?start=${startTime}&autoplay=${startTime > 0 ? 1 : 0}`}
-                  title="YouTube video player"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
-              </div>
+              {modeType === 'youtube' ? (
+                <div
+                  className={`aspect-video w-full rounded-2xl overflow-hidden border shadow-2xl ${
+                    isDark ? 'border-white/[0.12] bg-black' : 'border-stone-300 bg-black'
+                  }`}
+                >
+                  <iframe
+                    className="w-full h-full"
+                    src={`https://www.youtube.com/embed/${videoId}?start=${startTime}&autoplay=${startTime > 0 ? 1 : 0}`}
+                    title="YouTube video player"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowFullScreen
+                  />
+                </div>
+              ) : (
+                article && (
+                  <div
+                    className={`rounded-2xl p-5 border backdrop-blur-xl space-y-3 ${
+                      isDark
+                        ? 'bg-white/[0.04] border-white/[0.1]'
+                        : 'bg-white/85 border-stone-200 shadow-lg'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-amber-400 font-semibold">
+                      <FileText className="w-4 h-4" />
+                      <span>Clean Reader Mode</span>
+                    </div>
+                    <h2 className="text-lg md:text-xl font-bold leading-snug">{article.title}</h2>
+                    <div
+                      className={`flex items-center gap-4 text-xs md:text-sm ${
+                        isDark ? 'text-stone-400' : 'text-stone-600'
+                      }`}
+                    >
+                      <span>{article.wordCount.toLocaleString()} words</span>
+                      <span>•</span>
+                      <span>~{article.readTime} min read</span>
+                    </div>
+                    <a
+                      href={article.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:underline pt-1"
+                    >
+                      <span>Open Original Page</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  </div>
+                )
+              )}
 
+              {/* AI Summary Box */}
               <div
                 className={`rounded-2xl p-5 border backdrop-blur-xl space-y-4 ${
                   isDark
@@ -483,7 +572,7 @@ function TranscriptWorkspace() {
                 <div className="flex items-center justify-between">
                   <span className="text-base font-bold flex items-center gap-2">
                     <Sparkles className="w-5 h-5 text-amber-400" />
-                    AI Study Notes
+                    AI Summary & Notes
                   </span>
                   <select
                     value={language}
@@ -511,16 +600,16 @@ function TranscriptWorkspace() {
                   {notesLoading ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin" />
-                      <span>Generating Notes...</span>
+                      <span>Summarizing...</span>
                     </>
                   ) : (
-                    'Generate AI Summary & Notes'
+                    'Generate AI Summary'
                   )}
                 </button>
               </div>
             </div>
 
-            {/* Right: Transcript / Notes */}
+            {/* Right Column: Clean Article Reader / Transcript / AI Summary */}
             <div
               className={`lg:col-span-7 rounded-2xl border backdrop-blur-xl overflow-hidden shadow-2xl ${
                 isDark
@@ -536,16 +625,16 @@ function TranscriptWorkspace() {
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setViewMode('transcript')}
+                    onClick={() => setViewMode('reader')}
                     className={`px-4 py-2 rounded-xl text-sm font-semibold cursor-pointer transition ${
-                      viewMode === 'transcript'
+                      viewMode === 'reader'
                         ? 'bg-amber-500 text-stone-950'
                         : isDark
                         ? 'bg-white/[0.06] text-stone-300 hover:bg-white/[0.12]'
                         : 'bg-stone-200/70 text-stone-700'
                     }`}
                   >
-                    Transcript ({segments.length})
+                    {modeType === 'youtube' ? `Transcript (${segments.length})` : 'Clean Article'}
                   </button>
                   {notes && (
                     <button
@@ -559,13 +648,13 @@ function TranscriptWorkspace() {
                           : 'bg-stone-200/70 text-stone-700'
                       }`}
                     >
-                      AI Notes
+                      AI Summary
                     </button>
                   )}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {viewMode === 'transcript' && (
+                  {viewMode === 'reader' && modeType === 'youtube' && (
                     <button
                       type="button"
                       onClick={() => setShowTimestamps(!showTimestamps)}
@@ -606,7 +695,7 @@ function TranscriptWorkspace() {
                 </div>
               </div>
 
-              {viewMode === 'transcript' && (
+              {viewMode === 'reader' && modeType === 'youtube' && (
                 <div
                   className={`p-3.5 border-b ${
                     isDark ? 'border-white/[0.08] bg-black/20' : 'border-stone-200 bg-stone-50/70'
@@ -629,7 +718,7 @@ function TranscriptWorkspace() {
                 </div>
               )}
 
-              <div className="p-5 max-h-[650px] overflow-y-auto space-y-2.5">
+              <div className="p-6 max-h-[680px] overflow-y-auto space-y-3">
                 {viewMode === 'notes' ? (
                   <div
                     className={`whitespace-pre-wrap text-base md:text-lg leading-relaxed ${
@@ -638,6 +727,17 @@ function TranscriptWorkspace() {
                   >
                     {notes}
                   </div>
+                ) : modeType === 'article' && article ? (
+                  <article className="space-y-4">
+                    <h1 className="text-2xl md:text-3xl font-bold leading-tight">{article.title}</h1>
+                    <div
+                      className={`whitespace-pre-wrap text-base md:text-[17px] leading-8 ${
+                        isDark ? 'text-stone-200' : 'text-stone-800'
+                      }`}
+                    >
+                      {article.content}
+                    </div>
+                  </article>
                 ) : (
                   filteredSegments.map((seg, idx) => (
                     <div
@@ -677,7 +777,7 @@ function TranscriptWorkspace() {
       {/* Footer */}
       <footer className="relative z-20 py-6 text-center">
         <p className="text-xs md:text-sm tracking-wide text-stone-500">
-          Created by <span className="font-semibold text-amber-500">VisionCut Studio</span> • Built for Creators & Learners
+          Created by <span className="font-semibold text-amber-500">VisionCut Studio</span> • Article Reader & YouTube Transcript AI
         </p>
       </footer>
     </div>
@@ -687,7 +787,7 @@ function TranscriptWorkspace() {
 export default function Home() {
   return (
     <Suspense fallback={<div className="min-h-screen bg-[#090807] text-white p-10">Loading...</div>}>
-      <TranscriptWorkspace />
+      <ReaderWorkspace />
     </Suspense>
   );
 }
