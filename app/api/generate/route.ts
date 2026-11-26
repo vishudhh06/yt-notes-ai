@@ -31,7 +31,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.8-flash' });
 
     const prompt = `Analyze this YouTube video carefully and provide two clearly separated sections in ${language || 'English'}:
 
