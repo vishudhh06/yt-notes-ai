@@ -18,6 +18,9 @@ export const metadata: Metadata = {
     'visioncut studio',
   ],
   authors: [{ name: 'VisionCut Studio' }],
+  verification: {
+    google: '1WPhrZ9bxbHJWXPl-xJjcfkbx73xEMtlSclVEP9ePXc',
+  },
   openGraph: {
     title: 'SMRY & YT Reader AI — Free Transcript & Article Summarizer',
     description:
