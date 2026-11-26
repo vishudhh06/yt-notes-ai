@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   BookOpen,
@@ -42,6 +42,177 @@ function formatTime(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+function renderInlineElements(text: string, isDark: boolean): React.ReactNode[] {
+  const tokenRegex = /(\[[^\]]+\]\(https?:\/\/[^\s)]+\)|https?:\/\/[^\s)]+|\*\*[^*]+\*\*)/g;
+  const parts = text.split(tokenRegex);
+
+  return parts.map((part, i) => {
+    if (!part) return null;
+
+    const mdLink = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+    if (mdLink) {
+      const label = mdLink[1].replace(/^!\[.*?\]\(.*?\)\s*/, '').trim() || mdLink[2];
+      const href = mdLink[2];
+      return (
+        <a
+          key={i}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`inline-flex items-center gap-1 font-medium underline underline-offset-4 transition ${
+            isDark
+              ? 'text-amber-400 hover:text-amber-300 decoration-amber-500/50'
+              : 'text-amber-700 hover:text-amber-900 decoration-amber-600/50'
+          }`}
+        >
+          <span>{label}</span>
+          <ExternalLink className="w-3.5 h-3.5 inline shrink-0" />
+        </a>
+      );
+    }
+
+    if (/^https?:\/\/[^\s)]+$/.test(part)) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`inline-flex items-center gap-1 break-all font-medium underline underline-offset-4 transition ${
+            isDark
+              ? 'text-amber-400 hover:text-amber-300 decoration-amber-500/50'
+              : 'text-amber-700 hover:text-amber-900 decoration-amber-600/50'
+          }`}
+        >
+          <span>{part}</span>
+          <ExternalLink className="w-3.5 h-3.5 inline shrink-0" />
+        </a>
+      );
+    }
+
+    const boldMatch = part.match(/^\*\*([^*]+)\*\*$/);
+    if (boldMatch) {
+      return (
+        <strong key={i} className={isDark ? 'font-bold text-white' : 'font-bold text-stone-950'}>
+          {boldMatch[1]}
+        </strong>
+      );
+    }
+
+    return <span key={i}>{part}</span>;
+  });
+}
+
+function RichContentRenderer({ content, isDark }: { content: string; isDark: boolean }) {
+  const blocks = content.split(/\n\n+/);
+
+  return (
+    <div className="space-y-4">
+      {blocks.map((block, idx) => {
+        const trimmed = block.trim();
+        if (!trimmed) return null;
+
+        const imgMatch = trimmed.match(/^!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)$/);
+        if (imgMatch) {
+          return (
+            <figure key={idx} className="my-5">
+              <img
+                src={imgMatch[2]}
+                alt={imgMatch[1] || 'Article visual'}
+                loading="lazy"
+                className="rounded-xl max-h-96 w-auto object-contain border border-white/10 shadow-lg"
+              />
+              {imgMatch[1] && !imgMatch[1].startsWith('Image ') && (
+                <figcaption className="text-xs text-stone-400 mt-1.5">{imgMatch[1]}</figcaption>
+              )}
+            </figure>
+          );
+        }
+
+        if (trimmed.startsWith('### ')) {
+          return (
+            <h3
+              key={idx}
+              className={`text-lg md:text-xl font-bold pt-3 ${
+                isDark ? 'text-amber-300' : 'text-amber-900'
+              }`}
+            >
+              {renderInlineElements(trimmed.replace(/^###\s+/, ''), isDark)}
+            </h3>
+          );
+        }
+        if (trimmed.startsWith('## ')) {
+          return (
+            <h2
+              key={idx}
+              className={`text-xl md:text-2xl font-bold pt-4 pb-1 border-b ${
+                isDark ? 'text-white border-white/10' : 'text-stone-950 border-stone-200'
+              }`}
+            >
+              {renderInlineElements(trimmed.replace(/^##\s+/, ''), isDark)}
+            </h2>
+          );
+        }
+        if (trimmed.startsWith('# ')) {
+          return (
+            <h1
+              key={idx}
+              className={`text-2xl md:text-3xl font-extrabold pt-2 ${
+                isDark ? 'text-white' : 'text-stone-950'
+              }`}
+            >
+              {renderInlineElements(trimmed.replace(/^#\s+/, ''), isDark)}
+            </h1>
+          );
+        }
+
+        const lines = trimmed.split('\n');
+        const isBulletList = lines.every((l) => /^[-*•]\s+/.test(l.trim()));
+        if (isBulletList) {
+          return (
+            <ul key={idx} className="space-y-2.5 pl-1">
+              {lines.map((line, lIdx) => {
+                const cleanLine = line.trim().replace(/^[-*•]\s+/, '');
+                return (
+                  <li
+                    key={lIdx}
+                    className={`flex items-start gap-3 p-3 rounded-xl border ${
+                      isDark
+                        ? 'bg-white/[0.02] border-white/[0.07] text-stone-200'
+                        : 'bg-stone-50 border-stone-200/80 text-stone-800'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-amber-500 mt-2.5 shrink-0" />
+                    <div className="text-base md:text-[17px] leading-relaxed space-y-1">
+                      {renderInlineElements(cleanLine, isDark)}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          );
+        }
+
+        return (
+          <p
+            key={idx}
+            className={`text-base md:text-[17px] leading-8 ${
+              isDark ? 'text-stone-200' : 'text-stone-800'
+            }`}
+          >
+            {lines.map((line, lIdx) => (
+              <React.Fragment key={lIdx}>
+                {lIdx > 0 && <br />}
+                {renderInlineElements(line.replace(/!\[[^\]]*\]\([^\)]+\)/g, ''), isDark)}
+              </React.Fragment>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 function ReaderWorkspace() {
   const searchParams = useSearchParams();
   const initialVideo = searchParams.get('v');
@@ -52,16 +223,13 @@ function ReaderWorkspace() {
   const [inputUrl, setInputUrl] = useState('');
   const [modeType, setModeType] = useState<'none' | 'youtube' | 'article'>('none');
 
-  // YouTube state
   const [videoId, setVideoId] = useState('');
   const [startTime, setStartTime] = useState(0);
   const [segments, setSegments] = useState<Segment[]>([]);
   const [showTimestamps, setShowTimestamps] = useState(true);
 
-  // Article state (smry.ai mode)
   const [article, setArticle] = useState<ArticleData | null>(null);
 
-  // Shared states
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -281,7 +449,7 @@ function ReaderWorkspace() {
             </div>
             <div>
               <span className="font-bold text-lg md:text-xl tracking-tight block leading-none">
-                SMRY & YT Reader AI
+                SMRY &amp; YT Reader AI
               </span>
               <span
                 className={`text-[11px] tracking-widest uppercase ${
@@ -344,7 +512,7 @@ function ReaderWorkspace() {
                 isDark ? 'text-stone-400' : 'text-stone-600'
               }`}
             >
-              Paste any <strong>Web Article / Blog URL</strong> (like smry.ai) or any <strong>YouTube Video Link</strong> below for distraction-free reading, full transcripts, and instant AI notes.
+              Paste any <strong>Web Article / Blog URL</strong> or <strong>YouTube Video Link</strong> below for clean formatted reading, clickable links, transcripts, and AI notes.
             </p>
 
             {/* Input Form */}
@@ -396,7 +564,7 @@ function ReaderWorkspace() {
                   </>
                 ) : (
                   <>
-                    <span>Read & Summarize</span>
+                    <span>Read &amp; Summarize</span>
                     <ArrowUpRight className="w-5 h-5" />
                   </>
                 )}
@@ -409,7 +577,7 @@ function ReaderWorkspace() {
               </div>
             )}
 
-            {/* Quick Sample Buttons (Article + YouTube) */}
+            {/* Sample Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 text-left">
               <button
                 type="button"
@@ -455,12 +623,56 @@ function ReaderWorkspace() {
                 </p>
               </button>
             </div>
+
+            {/* SEO Content & FAQ Section */}
+            <section className="pt-8 text-left">
+              <div
+                className={`p-6 rounded-2xl border backdrop-blur-xl space-y-4 ${
+                  isDark
+                    ? 'bg-white/[0.03] border-white/[0.08]'
+                    : 'bg-white/75 border-stone-200/80'
+                }`}
+              >
+                <h2 className="text-xl md:text-2xl font-bold">
+                  Free YouTube to Text Transcript &amp; AI Article Reader
+                </h2>
+                <p className={`text-sm md:text-base leading-relaxed ${isDark ? 'text-stone-400' : 'text-stone-600'}`}>
+                  SMRY &amp; YT Reader AI by VisionCut Studio lets students, researchers, and creators extract full YouTube video transcripts with clickable timestamps and convert long blog posts into clean, ad-free reading pages with instant AI summaries in English, Hindi, and Hinglish.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                  <div>
+                    <h3 className="font-semibold text-amber-400 text-sm mb-1">
+                      How to get a YouTube transcript?
+                    </h3>
+                    <p className={`text-xs md:text-sm ${isDark ? 'text-stone-400' : 'text-stone-600'}`}>
+                      Paste any YouTube video URL in the box above and click Read &amp; Summarize to get timestamped captions and .TXT export in 1 second.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-amber-400 text-sm mb-1">
+                      How to summarize any web article?
+                    </h3>
+                    <p className={`text-xs md:text-sm ${isDark ? 'text-stone-400' : 'text-stone-600'}`}>
+                      Paste any blog or news article link to remove clutter, view clickable links cleanly, and generate a structured TL;DR summary.
+                    </p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-amber-400 text-sm mb-1">
+                      Is this tool free to use?
+                    </h3>
+                    <p className={`text-xs md:text-sm ${isDark ? 'text-stone-400' : 'text-stone-600'}`}>
+                      Yes, you can extract unlimited transcripts, search keywords inside videos, and download study notes completely free.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
           </div>
         </main>
       ) : (
-        /* Split-Screen Workspace for Both Article & YouTube */
+        /* Split-Screen Workspace */
         <main className="relative z-20 max-w-6xl w-full mx-auto px-4 py-6 space-y-6">
-          {/* Top Bar */}
           <form
             onSubmit={handleSubmit}
             className={`relative z-30 flex flex-col sm:flex-row gap-2 max-w-3xl mx-auto p-2 rounded-2xl border backdrop-blur-xl ${
@@ -509,7 +721,7 @@ function ReaderWorkspace() {
           )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Sidebar: Video Player (for YouTube) OR Article Metadata (for Web URL) + AI Notes */}
+            {/* Left Sidebar */}
             <div className="lg:col-span-5 lg:sticky lg:top-6 space-y-4">
               {modeType === 'youtube' ? (
                 <div
@@ -552,7 +764,7 @@ function ReaderWorkspace() {
                       href={article.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs text-amber-400 hover:underline pt-1"
+                      className="inline-flex items-center gap-1.5 text-xs md:text-sm font-medium text-amber-400 hover:underline pt-1"
                     >
                       <span>Open Original Page</span>
                       <ExternalLink className="w-3.5 h-3.5" />
@@ -561,7 +773,7 @@ function ReaderWorkspace() {
                 )
               )}
 
-              {/* AI Summary Box */}
+              {/* AI Summary Card */}
               <div
                 className={`rounded-2xl p-5 border backdrop-blur-xl space-y-4 ${
                   isDark
@@ -572,7 +784,7 @@ function ReaderWorkspace() {
                 <div className="flex items-center justify-between">
                   <span className="text-base font-bold flex items-center gap-2">
                     <Sparkles className="w-5 h-5 text-amber-400" />
-                    AI Summary & Notes
+                    AI Summary &amp; Notes
                   </span>
                   <select
                     value={language}
@@ -609,7 +821,7 @@ function ReaderWorkspace() {
               </div>
             </div>
 
-            {/* Right Column: Clean Article Reader / Transcript / AI Summary */}
+            {/* Right Column: Organized Clean Article / Transcript / Summary */}
             <div
               className={`lg:col-span-7 rounded-2xl border backdrop-blur-xl overflow-hidden shadow-2xl ${
                 isDark
@@ -718,25 +930,15 @@ function ReaderWorkspace() {
                 </div>
               )}
 
-              <div className="p-6 max-h-[680px] overflow-y-auto space-y-3">
+              <div className="p-6 max-h-[700px] overflow-y-auto space-y-3">
                 {viewMode === 'notes' ? (
-                  <div
-                    className={`whitespace-pre-wrap text-base md:text-lg leading-relaxed ${
-                      isDark ? 'text-stone-200' : 'text-stone-800'
-                    }`}
-                  >
-                    {notes}
-                  </div>
+                  <RichContentRenderer content={notes} isDark={isDark} />
                 ) : modeType === 'article' && article ? (
-                  <article className="space-y-4">
-                    <h1 className="text-2xl md:text-3xl font-bold leading-tight">{article.title}</h1>
-                    <div
-                      className={`whitespace-pre-wrap text-base md:text-[17px] leading-8 ${
-                        isDark ? 'text-stone-200' : 'text-stone-800'
-                      }`}
-                    >
-                      {article.content}
-                    </div>
+                  <article className="space-y-5">
+                    <h1 className="text-2xl md:text-3xl font-extrabold leading-tight border-b border-white/10 pb-4">
+                      {article.title}
+                    </h1>
+                    <RichContentRenderer content={article.content} isDark={isDark} />
                   </article>
                 ) : (
                   filteredSegments.map((seg, idx) => (
@@ -777,7 +979,7 @@ function ReaderWorkspace() {
       {/* Footer */}
       <footer className="relative z-20 py-6 text-center">
         <p className="text-xs md:text-sm tracking-wide text-stone-500">
-          Created by <span className="font-semibold text-amber-500">VisionCut Studio</span> • Article Reader & YouTube Transcript AI
+          Created by <span className="font-semibold text-amber-500">VisionCut Studio</span> • Article Reader &amp; YouTube Transcript AI
         </p>
       </footer>
     </div>

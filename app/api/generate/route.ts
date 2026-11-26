@@ -32,31 +32,82 @@ async function generateNotesWithFallback(prompt: string) {
   throw lastError || new Error('AI servers abhi busy hain, 10 second baad dobara try karein.');
 }
 
-// Clean Web Article Extractor (smry.ai style via Jina Reader + Direct HTML fallback)
+// Clean & organize scraped blog markdown (removes nav, comments, tracking pixels, footer noise)
+function cleanArticleMarkdown(raw: string) {
+  const lines = raw.split('\n');
+  const cleanedLines: string[] = [];
+
+  const noisePatterns = [
+    /^Skip to content/i,
+    /^Search for:/i,
+    /^Open Search/i,
+    /^Published Time:/i,
+    /^URL Source:/i,
+    /^Markdown Content:/i,
+    /^Title:/i,
+    /^Loading Comments/i,
+    /^Write a Comment/i,
+    /^Email \(Required\)/i,
+    /^Blog at WordPress\.com/i,
+    /^Collapse this bar/i,
+    /^Report this content/i,
+    /^Have a WordPress\.com account/i,
+    /^Type your email/i,
+    /^Subscribe$/i,
+    /^Subscribed$/i,
+    /^\[\s*\]\(https?:\/\/[^\)]+\)$/,
+    /pixel\.wp\.com/i,
+    /g\.gif\?/i,
+  ];
+
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      cleanedLines.push('');
+      continue;
+    }
+
+    if (noisePatterns.some((rx) => rx.test(trimmed))) continue;
+
+    // Remove empty anchor links [](url) inline
+    line = line.replace(/\[\s*\]\(https?:\/\/[^\)]+\)/g, '');
+
+    // Remove tiny tracking/avatar images
+    if (/!\[.*?\]\(.*?(?:w=50|pixel\.|gravatar|emoji).*?\)/i.test(line)) continue;
+
+    if (line.trim()) {
+      cleanedLines.push(line);
+    }
+  }
+
+  return cleanedLines
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 async function fetchWebArticle(targetUrl: string) {
   let formattedUrl = targetUrl.trim();
   if (!/^https?:\/\//i.test(formattedUrl)) {
     formattedUrl = `https://${formattedUrl}`;
   }
 
-  // Primary: Fast clean markdown reader extraction
   try {
     const readerRes = await fetch(`https://r.jina.ai/${formattedUrl}`, {
       headers: {
         Accept: 'text/plain',
         'X-Return-Format': 'markdown',
+        'X-Remove-Selector':
+          'nav, header, footer, aside, #comments, .comments-area, .sharedaddy, .jp-relatedposts, .widget-area, #jp-post-flair, .sd-sharing-enabled',
       },
     });
+
     if (readerRes.ok) {
       const rawText = await readerRes.text();
-      if (rawText && rawText.length > 200) {
+      if (rawText && rawText.length > 150) {
         const titleMatch = rawText.match(/^Title:\s*(.+)$/m);
         const title = titleMatch ? titleMatch[1].trim() : new URL(formattedUrl).hostname;
-        const cleanBody = rawText
-          .replace(/^Title:.*$/m, '')
-          .replace(/^URL Source:.*$/m, '')
-          .replace(/^Markdown Content:.*$/m, '')
-          .trim();
+        const cleanBody = cleanArticleMarkdown(rawText);
 
         const wordCount = cleanBody.split(/\s+/).length;
         return {
@@ -70,10 +121,9 @@ async function fetchWebArticle(targetUrl: string) {
       }
     }
   } catch {
-    // Fallback to direct HTML fetch
+    // Fallback below
   }
 
-  // Fallback: Direct HTML text extraction
   const res = await fetch(formattedUrl, {
     headers: {
       'User-Agent':
@@ -92,6 +142,8 @@ async function fetchWebArticle(targetUrl: string) {
   const textOnly = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
     .replace(/<\/(p|div|h1|h2|h3|h4|li|br)>/gi, '\n\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
@@ -120,7 +172,6 @@ export async function POST(req: Request) {
   try {
     const { url, action, language, transcriptText } = await req.json();
 
-    // Generate AI Summary (Works for both YouTube & Articles)
     if (action === 'summarize') {
       if (!transcriptText) {
         return NextResponse.json({ error: 'Content empty hai.' }, { status: 400 });
@@ -128,9 +179,14 @@ export async function POST(req: Request) {
       const prompt = `You are an expert study and reading assistant. Create a crystal-clear, structured summary in ${language || 'English'} from the content below.
 
 Format clearly with:
-- **TL;DR (Quick Summary)** (3-4 crisp lines)
-- **Key Points & Takeaways** (Clear bullet points)
-- **Important Conclusion**
+## TL;DR (Quick Summary)
+(3-4 crisp lines)
+
+## Key Points & Takeaways
+- Bullet points of main ideas
+
+## Conclusion
+(Final takeaway)
 
 Content:
 ${transcriptText.slice(0, 40000)}`;
@@ -145,7 +201,6 @@ ${transcriptText.slice(0, 40000)}`;
 
     const videoId = extractVideoId(url);
 
-    // Branch 1: YouTube Video URL
     if (videoId) {
       if (!process.env.SUPADATA_API_KEY) {
         return NextResponse.json(
@@ -180,7 +235,6 @@ ${transcriptText.slice(0, 40000)}`;
       return NextResponse.json({ type: 'youtube', videoId, segments });
     }
 
-    // Branch 2: Any Web Article / Blog / News URL (smry.ai mode)
     const articleData = await fetchWebArticle(url);
     return NextResponse.json(articleData);
   } catch (error: any) {
