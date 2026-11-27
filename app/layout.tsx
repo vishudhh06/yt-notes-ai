@@ -5,6 +5,9 @@ export const metadata: Metadata = {
   title: 'Free YouTube Transcript Generator & Article Summarizer AI | VisionCut Studio',
   description:
     'Extract YouTube video transcripts with clickable timestamps in 1 second and read or summarize any web article cleanly with AI. Free tool by VisionCut Studio.',
+  alternates: {
+    canonical: 'https://yt-notes-ai-pi.vercel.app',
+  },
   keywords: [
     'youtube transcript generator',
     'youtube to transcript',
