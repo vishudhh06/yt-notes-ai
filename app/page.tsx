@@ -1,33 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  Sparkles,
-  Link2,
-  ClipboardPaste,
-  X,
-  Search,
-  Copy,
-  Check,
-  Download,
-  ExternalLink,
-  History,
-  Trash2,
-  Sun,
-  Moon,
-  Youtube,
-  FileText,
-  RefreshCw,
-  Clock,
-  BookOpen,
-  Heart,
-  Loader2,
-  AlertCircle,
-} from 'lucide-react';
 
-// Flip this to true later when you want to show the Support/Donate button
-const SHOW_DONATE_BUTTON = false;
-const DONATE_URL = 'https://buymeacoffee.com/';
+// Baad mein Donate/Support button dikhane ke liye ise true kar dein
+const SHOW_DONATE_BUTTON: boolean = false;
+const DONATE_URL: string = 'https://buymeacoffee.com/';
 const MAX_HISTORY_ITEMS = 8;
 
 interface Segment {
@@ -43,7 +20,7 @@ interface ExtractedItem {
   videoId?: string;
   segments?: Segment[];
   content: string;
-  summary?: string;
+  summaries?: Record<string, string>;
   timestamp: number;
 }
 
@@ -111,7 +88,10 @@ function RichMarkdownView({ content, fontSize }: { content: string; fontSize: nu
         }
         if (line.startsWith('## ')) {
           return (
-            <h2 key={index} className="text-xl font-bold mt-5 mb-2 border-b border-current/10 pb-1">
+            <h2
+              key={index}
+              className="text-xl font-bold mt-5 mb-2 border-b border-current/10 pb-1"
+            >
               {renderInlineLinks(line.replace(/^##\s+/, ''))}
             </h2>
           );
@@ -155,33 +135,31 @@ function RichMarkdownView({ content, fontSize }: { content: string; fontSize: nu
 }
 
 export default function HomePage() {
-  const [darkMode, setDarkMode] = useState(true);
-  const [inputUrl, setInputUrl] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [darkMode, setDarkMode] = useState<boolean>(true);
+  const [inputUrl, setInputUrl] = useState<string>('');
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const [currentItem, setCurrentItem] = useState<ExtractedItem | null>(null);
   const [history, setHistory] = useState<ExtractedItem[]>([]);
 
   const [activeTab, setActiveTab] = useState<'content' | 'summary'>('content');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showTimestamps, setShowTimestamps] = useState(true);
-  const [fontSize, setFontSize] = useState(15);
-  const [videoStartSec, setVideoStartSec] = useState(0);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showTimestamps, setShowTimestamps] = useState<boolean>(true);
+  const [fontSize, setFontSize] = useState<number>(15);
+  const [videoStartSec, setVideoStartSec] = useState<number>(0);
 
-  // AI Summary States
   const [summaryLang, setSummaryLang] = useState<'english' | 'hindi' | 'hinglish'>('english');
   const [summaryFormat, setSummaryFormat] = useState<'detailed' | 'short'>('detailed');
-  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState<boolean>(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const [copiedType, setCopiedType] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Load saved history (max 8 items) on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('vc_reader_history_v1');
+      const saved = localStorage.getItem('vc_reader_history_v3');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
@@ -198,7 +176,7 @@ export default function HomePage() {
       const filtered = prev.filter((h) => h.sourceUrl !== item.sourceUrl);
       const updated = [item, ...filtered].slice(0, MAX_HISTORY_ITEMS);
       try {
-        localStorage.setItem('vc_reader_history_v1', JSON.stringify(updated));
+        localStorage.setItem('vc_reader_history_v3', JSON.stringify(updated));
       } catch {
         // Ignore quota error
       }
@@ -208,7 +186,11 @@ export default function HomePage() {
 
   const clearHistory = () => {
     setHistory([]);
-    localStorage.removeItem('vc_reader_history_v1');
+    try {
+      localStorage.removeItem('vc_reader_history_v3');
+    } catch {
+      // Ignore
+    }
   };
 
   const handleExtract = async (overrideUrl?: string) => {
@@ -234,7 +216,7 @@ export default function HomePage() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to extract content.');
+        throw new Error(data?.error || 'Failed to extract content.');
       }
 
       const newItem: ExtractedItem = {
@@ -245,6 +227,7 @@ export default function HomePage() {
         videoId: data.videoId,
         segments: data.segments,
         content: data.content,
+        summaries: {},
         timestamp: Date.now(),
       };
 
@@ -258,11 +241,20 @@ export default function HomePage() {
     }
   };
 
+  const currentSummaryKey = `${summaryLang}_${summaryFormat}`;
+  const activeSummaryText = currentItem?.summaries?.[currentSummaryKey] || '';
+
   const handleGenerateSummary = async (
     itemToSummarize: ExtractedItem,
     lang = summaryLang,
-    fmt = summaryFormat
+    fmt = summaryFormat,
+    forceRefresh = false
   ) => {
+    const key = `${lang}_${fmt}`;
+    if (!forceRefresh && itemToSummarize.summaries?.[key]) {
+      return;
+    }
+
     setSummaryLoading(true);
     setSummaryError(null);
 
@@ -280,12 +272,15 @@ export default function HomePage() {
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error || 'Could not generate AI summary.');
+        throw new Error(data?.error || 'Could not generate AI summary.');
       }
 
       const updatedItem: ExtractedItem = {
         ...itemToSummarize,
-        summary: data.summary,
+        summaries: {
+          ...(itemToSummarize.summaries || {}),
+          [key]: data.summary,
+        },
       };
       setCurrentItem(updatedItem);
       saveToHistory(updatedItem);
@@ -298,8 +293,8 @@ export default function HomePage() {
 
   const handleTabSwitch = (tab: 'content' | 'summary') => {
     setActiveTab(tab);
-    if (tab === 'summary' && currentItem && !currentItem.summary && !summaryLoading) {
-      handleGenerateSummary(currentItem, summaryLang, summaryFormat);
+    if (tab === 'summary' && currentItem && !summaryLoading) {
+      handleGenerateSummary(currentItem, summaryLang, summaryFormat, false);
     }
   };
 
@@ -330,8 +325,8 @@ export default function HomePage() {
   const handleDownloadFile = (ext: 'txt' | 'md') => {
     if (!currentItem) return;
     let output = `# ${currentItem.title}\nSource: ${currentItem.sourceUrl}\n\n`;
-    if (activeTab === 'summary' && currentItem.summary) {
-      output += `## AI Summary (${summaryLang.toUpperCase()})\n\n${currentItem.summary}`;
+    if (activeTab === 'summary' && activeSummaryText) {
+      output += `## AI Summary (${summaryLang.toUpperCase()})\n\n${activeSummaryText}`;
     } else if (currentItem.type === 'youtube' && currentItem.segments && showTimestamps) {
       output += currentItem.segments
         .map((s) => `[${formatSeconds(s.offset)}] ${s.text}`)
@@ -360,9 +355,7 @@ export default function HomePage() {
   return (
     <div
       className={`min-h-screen transition-colors duration-300 ${
-        darkMode
-          ? 'bg-slate-950 text-slate-100'
-          : 'bg-slate-50 text-slate-900'
+        darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'
       }`}
     >
       {/* Ambient Background Glow */}
@@ -375,8 +368,8 @@ export default function HomePage() {
       <header
         className={`sticky top-0 z-30 backdrop-blur-xl border-b ${
           darkMode
-            ? 'bg-slate-950/80 border-slate-800/80'
-            : 'bg-white/85 border-slate-200'
+            ? 'bg-slate-950/85 border-slate-800/80'
+            : 'bg-white/90 border-slate-200'
         }`}
       >
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col md:flex-row items-center gap-3">
@@ -388,14 +381,14 @@ export default function HomePage() {
                 setInputUrl('');
                 setError(null);
               }}
-              className="flex items-center gap-2 text-left"
+              className="flex items-center gap-2.5 text-left"
             >
-              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold shadow-md">
-                <Sparkles className="w-4 h-4" />
+              <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xs font-extrabold shadow-md">
+                VC
               </div>
               <div>
                 <span className="font-bold text-sm tracking-tight block leading-none">
-                  SMRY & YT Reader AI
+                  SMRY &amp; YT Reader AI
                 </span>
                 <span className="text-[10px] opacity-60 font-medium">
                   by VisionCut Studio
@@ -409,17 +402,16 @@ export default function HomePage() {
                   href={DONATE_URL}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 text-amber-400 text-xs font-medium flex items-center gap-1"
+                  className="px-2.5 py-1.5 rounded-lg bg-amber-500/15 text-amber-400 text-xs font-medium"
                 >
-                  <Heart className="w-3.5 h-3.5" /> Support
+                  Support
                 </a>
               )}
               <button
                 onClick={() => setDarkMode(!darkMode)}
-                className="p-2 rounded-lg border border-current/15 hover:bg-current/5"
-                aria-label="Toggle theme"
+                className="px-2.5 py-1.5 rounded-lg border border-current/15 text-xs font-medium hover:bg-current/5"
               >
-                {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+                {darkMode ? 'Light' : 'Dark'}
               </button>
             </div>
           </div>
@@ -439,7 +431,6 @@ export default function HomePage() {
                   : 'bg-slate-100 border-slate-300 focus-within:border-indigo-500'
               }`}
             >
-              <Link2 className="w-4 h-4 opacity-50 shrink-0 mr-2" />
               <input
                 ref={inputRef}
                 type="text"
@@ -453,18 +444,18 @@ export default function HomePage() {
                   type="button"
                   onClick={handleNewLinkReset}
                   title="Clear & Paste New Link"
-                  className="p-1 rounded-md opacity-60 hover:opacity-100 hover:bg-current/10"
+                  className="px-2 py-0.5 rounded-md text-xs font-bold opacity-70 hover:opacity-100 hover:bg-current/10"
                 >
-                  <X className="w-4 h-4" />
+                  Clear
                 </button>
               ) : (
                 <button
                   type="button"
                   onClick={handlePasteFromClipboard}
                   title="Paste from Clipboard"
-                  className="px-2 py-0.5 rounded-md text-xs font-medium bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 flex items-center gap-1 shrink-0"
+                  className="px-2.5 py-0.5 rounded-md text-xs font-semibold bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 shrink-0"
                 >
-                  <ClipboardPaste className="w-3.5 h-3.5" /> Paste
+                  Paste
                 </button>
               )}
             </div>
@@ -472,15 +463,9 @@ export default function HomePage() {
             <button
               type="submit"
               disabled={loading}
-              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-sm font-semibold shadow-md disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-sm font-semibold shadow-md disabled:opacity-50 shrink-0"
             >
-              {loading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Extracting...
-                </>
-              ) : (
-                'Extract'
-              )}
+              {loading ? 'Extracting...' : 'Extract'}
             </button>
           </form>
 
@@ -491,17 +476,16 @@ export default function HomePage() {
                 href={DONATE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5 transition"
+                className="px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 text-xs font-semibold transition"
               >
-                <Heart className="w-3.5 h-3.5 fill-current" /> Support Us
+                Support Us
               </a>
             )}
             <button
               onClick={() => setDarkMode(!darkMode)}
-              className="p-2 rounded-xl border border-current/15 hover:bg-current/5 transition"
-              aria-label="Toggle theme"
+              className="px-3 py-2 rounded-xl border border-current/15 text-xs font-medium hover:bg-current/5 transition"
             >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {darkMode ? 'Light Mode' : 'Dark Mode'}
             </button>
           </div>
         </div>
@@ -511,10 +495,7 @@ export default function HomePage() {
         {/* Error Banner */}
         {error && (
           <div className="mb-6 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-400 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 text-sm">
-              <AlertCircle className="w-5 h-5 shrink-0" />
-              <span>{error}</span>
-            </div>
+            <span className="text-sm">{error}</span>
             <button
               onClick={() => handleExtract()}
               className="px-3 py-1 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-xs font-semibold shrink-0"
@@ -534,15 +515,14 @@ export default function HomePage() {
             }`}
           >
             <div className="flex items-center justify-between mb-2.5">
-              <span className="text-xs font-semibold uppercase tracking-wider opacity-60 flex items-center gap-1.5">
-                <History className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="text-xs font-semibold uppercase tracking-wider opacity-60">
                 Recent History ({history.length}/{MAX_HISTORY_ITEMS})
               </span>
               <button
                 onClick={clearHistory}
-                className="text-xs opacity-60 hover:opacity-100 hover:text-red-400 flex items-center gap-1"
+                className="text-xs opacity-60 hover:opacity-100 hover:text-red-400"
               >
-                <Trash2 className="w-3 h-3" /> Clear
+                Clear All
               </button>
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">
@@ -557,7 +537,7 @@ export default function HomePage() {
                       setError(null);
                       setVideoStartSec(0);
                     }}
-                    className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 shrink-0 max-w-[230px] transition ${
+                    className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 shrink-0 max-w-[240px] transition ${
                       isActive
                         ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 font-medium'
                         : darkMode
@@ -565,11 +545,15 @@ export default function HomePage() {
                         : 'bg-slate-100 border-slate-200 hover:bg-slate-200/70'
                     }`}
                   >
-                    {item.type === 'youtube' ? (
-                      <Youtube className="w-3.5 h-3.5 text-red-400 shrink-0" />
-                    ) : (
-                      <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    )}
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        item.type === 'youtube'
+                          ? 'bg-red-500/20 text-red-400'
+                          : 'bg-emerald-500/20 text-emerald-400'
+                      }`}
+                    >
+                      {item.type === 'youtube' ? 'YT' : 'WEB'}
+                    </span>
                     <span className="truncate">{item.title}</span>
                   </button>
                 );
@@ -578,14 +562,14 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Empty Landing State (Before Any Link is Extracted) */}
+        {/* Empty Landing State */}
         {!currentItem && !loading && (
           <div className="text-center py-14 max-w-2xl mx-auto">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 text-xs font-medium mb-4">
-              <Sparkles className="w-3.5 h-3.5" /> Free Transcript & Clean Article Reader
+            <div className="inline-block px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 text-xs font-medium mb-4">
+              Free Transcript &amp; Clean Article Reader
             </div>
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight mb-3">
-              Extract YouTube Transcripts & Summarize Any Article in 1 Second
+              Extract YouTube Transcripts &amp; Summarize Any Article in 1 Second
             </h1>
             <p className="text-sm md:text-base opacity-70 mb-8">
               Paste any YouTube video URL for clickable timestamps or any blog link to read clutter-free with instant AI summaries in English, Hindi, and Hinglish.
@@ -600,9 +584,9 @@ export default function HomePage() {
                   setInputUrl(sample);
                   handleExtract(sample);
                 }}
-                className="px-3 py-1.5 rounded-lg border border-current/15 hover:bg-current/5 flex items-center gap-1.5"
+                className="px-3 py-1.5 rounded-lg border border-current/15 hover:bg-current/5"
               >
-                <Youtube className="w-3.5 h-3.5 text-red-400" /> 3Blue1Brown Neural Networks
+                YouTube: 3Blue1Brown Neural Networks
               </button>
               <button
                 onClick={() => {
@@ -610,9 +594,9 @@ export default function HomePage() {
                   setInputUrl(sample);
                   handleExtract(sample);
                 }}
-                className="px-3 py-1.5 rounded-lg border border-current/15 hover:bg-current/5 flex items-center gap-1.5"
+                className="px-3 py-1.5 rounded-lg border border-current/15 hover:bg-current/5"
               >
-                <FileText className="w-3.5 h-3.5 text-emerald-400" /> Paul Graham Essay
+                Article: Paul Graham Essay
               </button>
             </div>
           </div>
@@ -645,8 +629,8 @@ export default function HomePage() {
                   </div>
                 ) : (
                   <div className="p-5 bg-gradient-to-br from-indigo-600/15 to-purple-600/10 border-b border-current/10">
-                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-400 mb-2">
-                      <BookOpen className="w-3.5 h-3.5" /> Clean Reader Mode
+                    <span className="text-xs font-semibold text-emerald-400 block mb-2">
+                      Clean Reader Mode
                     </span>
                     <h2 className="text-lg font-bold leading-snug">{currentItem.title}</h2>
                   </div>
@@ -658,12 +642,9 @@ export default function HomePage() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-3 text-xs opacity-70">
-                    <span className="flex items-center gap-1">
-                      <FileText className="w-3.5 h-3.5" /> {wordCount.toLocaleString()} words
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Clock className="w-3.5 h-3.5" /> ~{readTimeMin} min read
-                    </span>
+                    <span>{wordCount.toLocaleString()} words</span>
+                    <span>•</span>
+                    <span>~{readTimeMin} min read</span>
                   </div>
 
                   <div className="pt-2 border-t border-current/10 flex items-center justify-between gap-2">
@@ -671,9 +652,9 @@ export default function HomePage() {
                       href={currentItem.sourceUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-xs text-indigo-400 hover:underline flex items-center gap-1 font-medium"
+                      className="text-xs text-indigo-400 hover:underline font-medium"
                     >
-                      View Original Source <ExternalLink className="w-3 h-3" />
+                      View Original Source ↗
                     </a>
                     <button
                       onClick={handleNewLinkReset}
@@ -709,13 +690,13 @@ export default function HomePage() {
                   </button>
                   <button
                     onClick={() => handleTabSwitch('summary')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                       activeTab === 'summary'
                         ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow'
                         : 'opacity-70 hover:opacity-100'
                     }`}
                   >
-                    <Sparkles className="w-3.5 h-3.5" /> AI Summary
+                    AI Summary
                   </button>
                 </div>
 
@@ -737,10 +718,10 @@ export default function HomePage() {
                   </button>
                   <button
                     onClick={() => handleDownloadFile('txt')}
-                    className="px-2.5 py-1 rounded-lg border border-current/15 text-xs font-medium hover:bg-current/5 flex items-center gap-1"
+                    className="px-2.5 py-1 rounded-lg border border-current/15 text-xs font-medium hover:bg-current/5"
                     title="Download TXT"
                   >
-                    <Download className="w-3.5 h-3.5" /> .TXT
+                    Download .TXT
                   </button>
                 </div>
               </div>
@@ -748,23 +729,19 @@ export default function HomePage() {
               {/* TAB 1: TRANSCRIPT OR CLEAN ARTICLE */}
               {activeTab === 'content' && (
                 <div className="p-4 space-y-4">
-                  {/* Search & Copy Toolbar */}
                   <div className="flex flex-wrap items-center gap-2">
                     {currentItem.type === 'youtube' && (
-                      <div className="relative flex-1 min-w-[180px]">
-                        <Search className="w-3.5 h-3.5 opacity-50 absolute left-3 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                          placeholder="Search in transcript..."
-                          className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs focus:outline-none ${
-                            darkMode
-                              ? 'bg-slate-800/80 border-slate-700'
-                              : 'bg-slate-100 border-slate-300'
-                          }`}
-                        />
-                      </div>
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search keyword in transcript..."
+                        className={`flex-1 min-w-[180px] px-3 py-1.5 rounded-xl border text-xs focus:outline-none ${
+                          darkMode
+                            ? 'bg-slate-800/80 border-slate-700'
+                            : 'bg-slate-100 border-slate-300'
+                        }`}
+                      />
                     )}
 
                     {currentItem.type === 'youtube' && (
@@ -789,17 +766,9 @@ export default function HomePage() {
                           'main'
                         )
                       }
-                      className="px-3 py-1.5 rounded-xl bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 text-xs font-semibold flex items-center gap-1.5 ml-auto"
+                      className="px-3 py-1.5 rounded-xl bg-indigo-500/15 text-indigo-400 hover:bg-indigo-500/25 text-xs font-semibold ml-auto"
                     >
-                      {copiedType === 'main' ? (
-                        <>
-                          <Check className="w-3.5 h-3.5" /> Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" /> Copy Text
-                        </>
-                      )}
+                      {copiedType === 'main' ? 'Copied!' : 'Copy Text'}
                     </button>
                   </div>
 
@@ -845,7 +814,7 @@ export default function HomePage() {
                           key={lang}
                           onClick={() => {
                             setSummaryLang(lang);
-                            handleGenerateSummary(currentItem, lang, summaryFormat);
+                            handleGenerateSummary(currentItem, lang, summaryFormat, false);
                           }}
                           className={`px-2.5 py-1 rounded-lg text-xs font-semibold capitalize transition ${
                             summaryLang === lang
@@ -864,7 +833,7 @@ export default function HomePage() {
                         onChange={(e) => {
                           const fmt = e.target.value as 'detailed' | 'short';
                           setSummaryFormat(fmt);
-                          handleGenerateSummary(currentItem, summaryLang, fmt);
+                          handleGenerateSummary(currentItem, summaryLang, fmt, false);
                         }}
                         className={`px-2.5 py-1 rounded-lg border text-xs font-medium focus:outline-none ${
                           darkMode
@@ -878,29 +847,20 @@ export default function HomePage() {
 
                       <button
                         onClick={() =>
-                          handleGenerateSummary(currentItem, summaryLang, summaryFormat)
+                          handleGenerateSummary(currentItem, summaryLang, summaryFormat, true)
                         }
                         disabled={summaryLoading}
-                        className="px-2.5 py-1 rounded-lg border border-current/15 hover:bg-current/5 text-xs font-medium flex items-center gap-1"
-                        title="Regenerate Summary"
+                        className="px-2.5 py-1 rounded-lg border border-current/15 hover:bg-current/5 text-xs font-medium"
                       >
-                        <RefreshCw
-                          className={`w-3.5 h-3.5 ${summaryLoading ? 'animate-spin' : ''}`}
-                        />
-                        Regenerate
+                        {summaryLoading ? 'Generating...' : 'Regenerate'}
                       </button>
 
-                      {currentItem.summary && (
+                      {activeSummaryText && (
                         <button
-                          onClick={() => triggerCopy(currentItem.summary || '', 'summary')}
-                          className="px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-400 text-xs font-semibold flex items-center gap-1"
+                          onClick={() => triggerCopy(activeSummaryText, 'summary')}
+                          className="px-2.5 py-1 rounded-lg bg-indigo-500/15 text-indigo-400 text-xs font-semibold"
                         >
-                          {copiedType === 'summary' ? (
-                            <Check className="w-3.5 h-3.5" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5" />
-                          )}
-                          Copy
+                          {copiedType === 'summary' ? 'Copied!' : 'Copy'}
                         </button>
                       )}
                     </div>
@@ -909,17 +869,45 @@ export default function HomePage() {
                   {/* Summary Output Area */}
                   <div className="max-h-[60vh] overflow-y-auto pr-1">
                     {summaryLoading ? (
-                      <div className="py-14 flex flex-col items-center justify-center text-center gap-3">
-                        <Loader2 className="w-7 h-7 animate-spin text-indigo-400" />
+                      <div className="py-14 text-center space-y-2">
+                        <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent" />
                         <p className="text-sm font-medium">
                           Generating {summaryLang} AI summary...
                         </p>
                       </div>
                     ) : summaryError ? (
-                      <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm flex items-center justify-between">
+                      <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm flex items-center justify-between gap-2">
                         <span>{summaryError}</span>
                         <button
                           onClick={() =>
-                            handleGenerateSummary(currentItem, summaryLang, summaryFormat)
+                            handleGenerateSummary(currentItem, summaryLang, summaryFormat, true)
                           }
-                          className="px-3 py-1 rounded-lg bg-red-500/20 text-xs font-
+                          className="px-3 py-1 rounded-lg bg-red-500/20 text-xs font-semibold shrink-0"
+                        >
+                          Try Again
+                        </button>
+                      </div>
+                    ) : activeSummaryText ? (
+                      <RichMarkdownView content={activeSummaryText} fontSize={fontSize} />
+                    ) : (
+                      <div className="py-12 text-center">
+                        <button
+                          onClick={() =>
+                            handleGenerateSummary(currentItem, summaryLang, summaryFormat, true)
+                          }
+                          className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-sm font-semibold"
+                        >
+                          Generate AI Summary Now
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
