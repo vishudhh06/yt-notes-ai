@@ -3,15 +3,46 @@ import { NextRequest, NextResponse } from 'next/server';
 interface TranscriptSegment {
   text: string;
   offset: number;
+  duration?: number;
+}
+
+interface InnertubeCaptionTrack {
+  baseUrl?: string;
+  languageCode?: string;
+  kind?: string;
+}
+
+interface InnertubePlayerResponse {
+  playabilityStatus?: {
+    status?: string;
+    reason?: string;
+  };
+  videoDetails?: {
+    title?: string;
+    author?: string;
+  };
+  captions?: {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: InnertubeCaptionTrack[];
+    };
+  };
+}
+
+interface InnertubeAttemptResult {
+  segments: TranscriptSegment[];
+  ipBlocked: boolean;
+  privateOrUnavailable: boolean;
 }
 
 function extractYouTubeId(url: string): string | null {
+  const trimmed = url.trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) return trimmed;
+
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/|youtube\.com\/live\/)([a-zA-Z0-9_-]{11})/,
-    /^([a-zA-Z0-9_-]{11})$/,
   ];
   for (const pattern of patterns) {
-    const match = url.trim().match(pattern);
+    const match = trimmed.match(pattern);
     if (match && match[1]) return match[1];
   }
   return null;
@@ -25,62 +56,228 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
-    .replace(/\n/g, ' ')
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-async function fetchViaInnertube(videoId: string): Promise<TranscriptSegment[]> {
-  const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
-    },
-    body: JSON.stringify({
-      context: {
-        client: {
-          clientName: 'ANDROID',
-          clientVersion: '19.09.37',
-          androidSdkVersion: 30,
-          hl: 'en',
-          gl: 'US',
-        },
-      },
-      videoId,
-    }),
-    cache: 'no-store',
-  });
-
-  if (!playerRes.ok) return [];
-  const data = await playerRes.json();
-  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-  if (!Array.isArray(tracks) || tracks.length === 0) return [];
-
-  const preferredTrack =
-    tracks.find((t: { languageCode?: string }) => t.languageCode === 'en') ||
-    tracks.find((t: { languageCode?: string }) => t.languageCode === 'hi') ||
-    tracks[0];
-
-  if (!preferredTrack?.baseUrl) return [];
-
-  const captionRes = await fetch(preferredTrack.baseUrl, { cache: 'no-store' });
-  if (!captionRes.ok) return [];
-  const xml = await captionRes.text();
-
+function parseTimedTextXml(xml: string): TranscriptSegment[] {
   const segments: TranscriptSegment[] = [];
-  const regex = /<text start="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
-  let m: RegExpExecArray | null;
 
-  while ((m = regex.exec(xml)) !== null) {
-    const startSec = Math.floor(parseFloat(m[1] || '0'));
-    const cleanText = decodeHtmlEntities(m[2].replace(/<[^>]+>/g, ''));
+  // Format 1: <text start="1.23" dur="4.56">Caption</text>
+  const textRegex = /<text\s+start="([^"]+)"(?:\s+dur="([^"]+)")?[^>]*>([\s\S]*?)<\/text>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = textRegex.exec(xml)) !== null) {
+    const startSec = Math.floor(parseFloat(match[1] || '0'));
+    const durSec = parseFloat(match[2] || '0');
+    const cleanText = decodeHtmlEntities(match[3].replace(/<[^>]+>/g, ''));
     if (cleanText) {
-      segments.push({ text: cleanText, offset: startSec });
+      segments.push({ text: cleanText, offset: startSec, duration: durSec });
+    }
+  }
+
+  if (segments.length > 0) return segments;
+
+  // Format 2: <p t="1230" d="4560">Caption</p>
+  const pRegex = /<p\s+t="(\d+)"(?:\s+d="(\d+)")?[^>]*>([\s\S]*?)<\/p>/g;
+  while ((match = pRegex.exec(xml)) !== null) {
+    const startSec = Math.floor(parseInt(match[1] || '0', 10) / 1000);
+    const durSec = parseInt(match[2] || '0', 10) / 1000;
+    const cleanText = decodeHtmlEntities(match[3].replace(/<[^>]+>/g, ''));
+    if (cleanText) {
+      segments.push({ text: cleanText, offset: startSec, duration: durSec });
     }
   }
 
   return segments;
+}
+
+async function fetchViaSupadata(videoId: string): Promise<TranscriptSegment[]> {
+  const supadataKey = process.env.SUPADATA_API_KEY;
+  if (!supadataKey) return [];
+
+  try {
+    const res = await fetch(
+      `https://api.supadata.ai/v1/youtube/transcript?url=${encodeURIComponent(
+        `https://www.youtube.com/watch?v=${videoId}`
+      )}&text=false`,
+      {
+        headers: { 'x-api-key': supadataKey },
+        signal: AbortSignal.timeout(10000),
+        cache: 'no-store',
+      }
+    );
+
+    if (!res.ok) {
+      console.warn(`[Transcript] Supadata skipped (HTTP ${res.status}) — falling back.`);
+      return [];
+    }
+
+    const data = await res.json();
+    if (Array.isArray(data?.content)) {
+      return data.content
+        .map((item: { text?: string; offset?: number; duration?: number }) => ({
+          text: decodeHtmlEntities(item.text || ''),
+          offset: Math.floor((item.offset || 0) / 1000),
+          duration: (item.duration || 0) / 1000,
+        }))
+        .filter((s: TranscriptSegment) => s.text.length > 0);
+    }
+
+    if (typeof data?.content === 'string' && data.content.trim()) {
+      return [{ text: decodeHtmlEntities(data.content), offset: 0 }];
+    }
+  } catch (err) {
+    console.warn('[Transcript] Supadata request error — falling back:', err);
+  }
+
+  return [];
+}
+
+async function fetchViaExternalWorker(videoId: string): Promise<TranscriptSegment[]> {
+  const proxyUrl = process.env.TRANSCRIPT_PROXY_URL;
+  if (!proxyUrl) return [];
+
+  try {
+    const res = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(process.env.TRANSCRIPT_PROXY_SECRET
+          ? { Authorization: `Bearer ${process.env.TRANSCRIPT_PROXY_SECRET}` }
+          : {}),
+      },
+      body: JSON.stringify({
+        videoId,
+        url: `https://www.youtube.com/watch?v=${videoId}`,
+      }),
+      signal: AbortSignal.timeout(12000),
+      cache: 'no-store',
+    });
+
+    if (!res.ok) {
+      console.warn(`[Transcript] External proxy returned HTTP ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    if (Array.isArray(data?.segments)) {
+      return data.segments
+        .map((s: { text?: string; offset?: number }) => ({
+          text: decodeHtmlEntities(s.text || ''),
+          offset: Math.floor(Number(s.offset || 0)),
+        }))
+        .filter((s: TranscriptSegment) => s.text.length > 0);
+    }
+  } catch (err) {
+    console.warn('[Transcript] External proxy error:', err);
+  }
+
+  return [];
+}
+
+async function fetchViaInnertubeClient(
+  videoId: string,
+  clientType: 'IOS' | 'ANDROID'
+): Promise<InnertubeAttemptResult> {
+  const clientConfig =
+    clientType === 'IOS'
+      ? {
+          userAgent:
+            'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+          client: {
+            clientName: 'IOS',
+            clientVersion: '19.29.1',
+            deviceMake: 'Apple',
+            deviceModel: 'iPhone16,2',
+            osName: 'iPhone',
+            osVersion: '17.5.1.21F90',
+            hl: 'en',
+            gl: 'US',
+          },
+        }
+      : {
+          userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+          client: {
+            clientName: 'ANDROID',
+            clientVersion: '19.09.37',
+            androidSdkVersion: 30,
+            hl: 'en',
+            gl: 'US',
+          },
+        };
+
+  const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': clientConfig.userAgent,
+      'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
+    },
+    body: JSON.stringify({
+      context: { client: clientConfig.client },
+      videoId,
+    }),
+    signal: AbortSignal.timeout(9000),
+    cache: 'no-store',
+  });
+
+  if (playerRes.status === 429 || playerRes.status === 403) {
+    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+  }
+
+  if (!playerRes.ok) {
+    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  const data = (await playerRes.json()) as InnertubePlayerResponse;
+  const status = data?.playabilityStatus?.status || '';
+  const reason = data?.playabilityStatus?.reason || '';
+
+  if (status === 'LOGIN_REQUIRED' || /bot|sign in|unusual traffic/i.test(reason)) {
+    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+  }
+
+  if (status === 'UNPLAYABLE' || status === 'PRIVATE') {
+    return { segments: [], ipBlocked: false, privateOrUnavailable: true };
+  }
+
+  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  // Prefer manually uploaded captions first, then English/Hindi, then default track
+  const preferredTrack =
+    tracks.find((t) => t.kind !== 'asr' && t.languageCode === 'en') ||
+    tracks.find((t) => t.kind !== 'asr') ||
+    tracks.find((t) => t.languageCode === 'en') ||
+    tracks.find((t) => t.languageCode === 'hi') ||
+    tracks[0];
+
+  if (!preferredTrack?.baseUrl) {
+    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  const captionRes = await fetch(preferredTrack.baseUrl, {
+    signal: AbortSignal.timeout(9000),
+    cache: 'no-store',
+  });
+
+  if (captionRes.status === 429 || captionRes.status === 403) {
+    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+  }
+
+  if (!captionRes.ok) {
+    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  const xml = await captionRes.text();
+  const segments = parseTimedTextXml(xml);
+
+  return { segments, ipBlocked: false, privateOrUnavailable: false };
 }
 
 function cleanArticleMarkdown(md: string): string {
@@ -129,12 +326,13 @@ async function generateSummaryDirect(
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
           }),
+          signal: AbortSignal.timeout(20000),
         }
       );
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        lastErr = errData?.error?.message || `Gemini error (${res.status})`;
+        lastErr = errData?.error?.message || `Gemini API error (${res.status})`;
         continue;
       }
 
@@ -153,13 +351,14 @@ async function generateSummaryDirect(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
+    const body = await req.json().catch(() => null);
     const url = typeof body?.url === 'string' ? body.url : '';
     const mode = typeof body?.mode === 'string' ? body.mode : 'extract';
     const text = typeof body?.text === 'string' ? body.text : '';
     const language = typeof body?.language === 'string' ? body.language : 'english';
     const format = typeof body?.format === 'string' ? body.format : 'detailed';
 
+    // 1. AI Summary Mode
     if (mode === 'summary') {
       if (text.trim().length < 25) {
         return NextResponse.json(
@@ -171,6 +370,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ summary });
     }
 
+    // 2. Content Extraction Mode
     if (!url.trim()) {
       return NextResponse.json({ error: 'Please enter a valid URL.' }, { status: 400 });
     }
@@ -178,49 +378,79 @@ export async function POST(req: NextRequest) {
     const cleanUrl = url.trim();
     const videoId = extractYouTubeId(cleanUrl);
 
+    // A. YouTube Transcript Extraction Chain
     if (videoId) {
-      let segments: TranscriptSegment[] = [];
-
-      // 1. Try Supadata API first (silently skip if Limit Exceeded)
-      const supadataKey = process.env.SUPADATA_API_KEY;
-      if (supadataKey) {
-        try {
-          const ytRes = await fetch(
-            `https://api.supadata.ai/v1/youtube/transcript?url=https://www.youtube.com/watch?v=${videoId}&text=false`,
-            {
-              headers: { 'x-api-key': supadataKey },
-              cache: 'no-store',
-            }
+      let title = `YouTube Video (${videoId})`;
+      try {
+        const oembed = await fetch(
+          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+          { signal: AbortSignal.timeout(6000), cache: 'no-store' }
+        );
+        if (oembed.status === 404) {
+          return NextResponse.json(
+            { error: 'Video not found. Please check the YouTube URL.' },
+            { status: 404 }
           );
-
-          if (ytRes.ok) {
-            const ytData = await ytRes.json();
-            if (Array.isArray(ytData?.content)) {
-              segments = ytData.content
-                .map((item: { text?: string; offset?: number }) => ({
-                  text: (item.text || '').trim(),
-                  offset: Math.floor((item.offset || 0) / 1000),
-                }))
-                .filter((s: TranscriptSegment) => s.text.length > 0);
-            } else if (typeof ytData?.content === 'string' && ytData.content.trim()) {
-              segments = [{ text: ytData.content.trim(), offset: 0 }];
-            }
-          }
-        } catch {
-          // Silently fall back to Innertube below
         }
+        if (oembed.ok) {
+          const meta = await oembed.json();
+          if (meta?.title) title = meta.title;
+        }
+      } catch {
+        // Continue with fallback title
       }
 
-      // 2. Automatic Fallback: YouTube Innertube Player API
+      // Tier 1: Managed API (Supadata)
+      let segments = await fetchViaSupadata(videoId);
+
+      // Tier 2: Custom Residential Proxy / VPS Worker (if configured)
       if (segments.length === 0) {
-        try {
-          segments = await fetchViaInnertube(videoId);
-        } catch {
-          // Handled below
-        }
+        segments = await fetchViaExternalWorker(videoId);
+      }
+
+      // Tier 3: YouTube Innertube Mobile Clients (iOS -> Android)
+      let ipBlocked = false;
+      let privateOrUnavailable = false;
+
+      if (segments.length === 0) {
+        const iosResult = await fetchViaInnertubeClient(videoId, 'IOS').catch(() => ({
+          segments: [],
+          ipBlocked: false,
+          privateOrUnavailable: false,
+        }));
+        segments = iosResult.segments;
+        ipBlocked = iosResult.ipBlocked;
+        privateOrUnavailable = iosResult.privateOrUnavailable;
+      }
+
+      if (segments.length === 0 && !privateOrUnavailable) {
+        const androidResult = await fetchViaInnertubeClient(videoId, 'ANDROID').catch(() => ({
+          segments: [],
+          ipBlocked: false,
+          privateOrUnavailable: false,
+        }));
+        segments = androidResult.segments;
+        ipBlocked = ipBlocked || androidResult.ipBlocked;
+        privateOrUnavailable = privateOrUnavailable || androidResult.privateOrUnavailable;
       }
 
       if (segments.length === 0) {
+        if (privateOrUnavailable) {
+          return NextResponse.json(
+            { error: 'This video is private, members-only, or unavailable.' },
+            { status: 403 }
+          );
+        }
+        if (ipBlocked) {
+          console.error(`[Transcript] All providers blocked by YouTube IP restriction for ${videoId}`);
+          return NextResponse.json(
+            {
+              error:
+                'YouTube has temporarily rate-limited requests from this cloud server IP. Please try again shortly or configure TRANSCRIPT_PROXY_URL.',
+            },
+            { status: 503 }
+          );
+        }
         return NextResponse.json(
           {
             error:
@@ -232,19 +462,6 @@ export async function POST(req: NextRequest) {
 
       const plainText = segments.map((s) => s.text).join(' ');
 
-      let title = `YouTube Video (${videoId})`;
-      try {
-        const oembed = await fetch(
-          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
-        );
-        if (oembed.ok) {
-          const meta = await oembed.json();
-          if (meta?.title) title = meta.title;
-        }
-      } catch {
-        // Default title
-      }
-
       return NextResponse.json({
         type: 'youtube',
         videoId,
@@ -252,10 +469,11 @@ export async function POST(req: NextRequest) {
         sourceUrl: `https://www.youtube.com/watch?v=${videoId}`,
         segments,
         content: plainText,
+        transcript: plainText,
       });
     }
 
-    // Web Article Flow
+    // B. Web Article Extraction (Preserved)
     let targetUrl = cleanUrl;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
@@ -272,11 +490,17 @@ export async function POST(req: NextRequest) {
     let articleTitle = parsedUrl.hostname.replace('www.', '');
 
     try {
+      const jinaHeaders: Record<string, string> = {
+        Accept: 'text/plain',
+        'X-Remove-Selector': 'nav, footer, header, aside, .ads, .sidebar, .comments',
+      };
+      if (process.env.JINA_API_KEY) {
+        jinaHeaders.Authorization = `Bearer ${process.env.JINA_API_KEY}`;
+      }
+
       const jinaRes = await fetch(`https://r.jina.ai/${targetUrl}`, {
-        headers: {
-          Accept: 'text/plain',
-          'X-Remove-Selector': 'nav, footer, header, aside, .ads, .sidebar, .comments',
-        },
+        headers: jinaHeaders,
+        signal: AbortSignal.timeout(12000),
         cache: 'no-store',
       });
 
@@ -293,7 +517,7 @@ export async function POST(req: NextRequest) {
         articleMarkdown = cleanArticleMarkdown(cleaned);
       }
     } catch {
-      // Direct HTML fallback
+      // Proceed to direct HTML fallback
     }
 
     if (!articleMarkdown || articleMarkdown.length < 100) {
@@ -302,6 +526,7 @@ export async function POST(req: NextRequest) {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36',
         },
+        signal: AbortSignal.timeout(10000),
       });
       if (!directRes.ok) {
         return NextResponse.json(
@@ -328,7 +553,14 @@ export async function POST(req: NextRequest) {
       content: articleMarkdown,
     });
   } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'TimeoutError') {
+      return NextResponse.json(
+        { error: 'Request timed out while fetching content. Please try again.' },
+        { status: 504 }
+      );
+    }
     const message = err instanceof Error ? err.message : 'Something went wrong.';
+    console.error('[API /generate Error]:', err);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
