@@ -181,6 +181,7 @@ export async function POST(req: NextRequest) {
     if (videoId) {
       let segments: TranscriptSegment[] = [];
 
+      // 1. Try Supadata API first (silently skip if Limit Exceeded)
       const supadataKey = process.env.SUPADATA_API_KEY;
       if (supadataKey) {
         try {
@@ -206,10 +207,11 @@ export async function POST(req: NextRequest) {
             }
           }
         } catch {
-          // Proceed to Innertube fallback
+          // Silently fall back to Innertube below
         }
       }
 
+      // 2. Automatic Fallback: YouTube Innertube Player API
       if (segments.length === 0) {
         try {
           segments = await fetchViaInnertube(videoId);
@@ -222,7 +224,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'Captions could not be fetched for this video (it may be a music/instrumental video without subtitles, or captions are turned off).',
+              'Transcript unavailable for this video (captions may be disabled by the creator).',
           },
           { status: 404 }
         );
@@ -253,6 +255,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Web Article Flow
     let targetUrl = cleanUrl;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
