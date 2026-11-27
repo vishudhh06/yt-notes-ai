@@ -6,30 +6,27 @@ interface TranscriptSegment {
   duration?: number;
 }
 
-interface InnertubeCaptionTrack {
+interface CaptionTrack {
   baseUrl?: string;
   languageCode?: string;
   kind?: string;
 }
 
-interface InnertubePlayerResponse {
+interface PlayerResponse {
   playabilityStatus?: {
     status?: string;
     reason?: string;
   };
-  videoDetails?: {
-    title?: string;
-    author?: string;
-  };
   captions?: {
     playerCaptionsTracklistRenderer?: {
-      captionTracks?: InnertubeCaptionTrack[];
+      captionTracks?: CaptionTrack[];
     };
   };
 }
 
-interface InnertubeAttemptResult {
+interface ExtractionAttempt {
   segments: TranscriptSegment[];
+  tracksFound: boolean;
   ipBlocked: boolean;
   privateOrUnavailable: boolean;
 }
@@ -60,6 +57,49 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function extractJsonArrayAfterKey(source: string, key: string): unknown[] | null {
+  const keyIndex = source.indexOf(key);
+  if (keyIndex === -1) return null;
+
+  const startBracket = source.indexOf('[', keyIndex + key.length);
+  if (startBracket === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = startBracket; i < source.length; i++) {
+    const ch = source[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString) {
+      if (ch === '[') depth++;
+      else if (ch === ']') {
+        depth--;
+        if (depth === 0) {
+          try {
+            const parsed = JSON.parse(source.slice(startBracket, i + 1));
+            return Array.isArray(parsed) ? parsed : null;
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+  }
+  return null;
 }
 
 function parseTimedTextXml(xml: string): TranscriptSegment[] {
@@ -94,6 +134,114 @@ function parseTimedTextXml(xml: string): TranscriptSegment[] {
   return segments;
 }
 
+function parseJson3Captions(raw: string): TranscriptSegment[] {
+  try {
+    const data = JSON.parse(raw) as {
+      events?: Array<{
+        tStartMs?: number;
+        dDurationMs?: number;
+        segs?: Array<{ utf8?: string }>;
+      }>;
+    };
+    if (!Array.isArray(data?.events)) return [];
+
+    const segments: TranscriptSegment[] = [];
+    for (const ev of data.events) {
+      if (!Array.isArray(ev.segs)) continue;
+      const combined = decodeHtmlEntities(
+        ev.segs.map((s) => s.utf8 || '').join('')
+      );
+      if (combined) {
+        segments.push({
+          text: combined,
+          offset: Math.floor((ev.tStartMs || 0) / 1000),
+          duration: (ev.dDurationMs || 0) / 1000,
+        });
+      }
+    }
+    return segments;
+  } catch {
+    return [];
+  }
+}
+
+function selectPreferredTrack(tracks: CaptionTrack[]): CaptionTrack | null {
+  if (!tracks.length) return null;
+  return (
+    tracks.find((t) => t.kind !== 'asr' && t.languageCode === 'en') ||
+    tracks.find((t) => t.kind !== 'asr' && t.languageCode === 'hi') ||
+    tracks.find((t) => t.kind !== 'asr') ||
+    tracks.find((t) => t.languageCode === 'en') ||
+    tracks.find((t) => t.languageCode === 'hi') ||
+    tracks[0]
+  );
+}
+
+async function downloadCaptionTrack(
+  baseUrl: string
+): Promise<{ segments: TranscriptSegment[]; blocked: boolean }> {
+  const cleanBase = baseUrl.replace(/\\u0026/g, '&');
+
+  // 1. Try default XML timedtext URL
+  const xmlRes = await fetch(cleanBase, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    },
+    signal: AbortSignal.timeout(9000),
+    cache: 'no-store',
+  });
+
+  if (xmlRes.status === 429 || xmlRes.status === 403) {
+    return { segments: [], blocked: true };
+  }
+
+  if (xmlRes.ok) {
+    const bodyText = await xmlRes.text();
+    if (bodyText.trim()) {
+      const xmlSegments = parseTimedTextXml(bodyText);
+      if (xmlSegments.length > 0) {
+        return { segments: xmlSegments, blocked: false };
+      }
+      const jsonSegments = parseJson3Captions(bodyText);
+      if (jsonSegments.length > 0) {
+        return { segments: jsonSegments, blocked: false };
+      }
+    }
+  }
+
+  // 2. Try explicit json3 format if default XML returned empty
+  const json3Url = cleanBase.includes('fmt=')
+    ? cleanBase.replace(/fmt=[^&]+/, 'fmt=json3')
+    : `${cleanBase}&fmt=json3`;
+
+  const jsonRes = await fetch(json3Url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    },
+    signal: AbortSignal.timeout(9000),
+    cache: 'no-store',
+  });
+
+  if (jsonRes.status === 429 || jsonRes.status === 403) {
+    return { segments: [], blocked: true };
+  }
+
+  if (jsonRes.ok) {
+    const jsonText = await jsonRes.text();
+    if (jsonText.trim()) {
+      const segments = parseJson3Captions(jsonText);
+      if (segments.length > 0) {
+        return { segments, blocked: false };
+      }
+    }
+  }
+
+  // Track existed on YouTube, but timedtext returned 0 bytes (datacenter IP block)
+  return { segments: [], blocked: true };
+}
+
 async function fetchViaSupadata(videoId: string): Promise<TranscriptSegment[]> {
   const supadataKey = process.env.SUPADATA_API_KEY;
   if (!supadataKey) return [];
@@ -111,7 +259,7 @@ async function fetchViaSupadata(videoId: string): Promise<TranscriptSegment[]> {
     );
 
     if (!res.ok) {
-      console.warn(`[Transcript] Supadata skipped (HTTP ${res.status}) — falling back.`);
+      console.warn(`[Transcript] Supadata skipped (HTTP ${res.status}) — using fallback.`);
       return [];
     }
 
@@ -130,7 +278,7 @@ async function fetchViaSupadata(videoId: string): Promise<TranscriptSegment[]> {
       return [{ text: decodeHtmlEntities(data.content), offset: 0 }];
     }
   } catch (err) {
-    console.warn('[Transcript] Supadata request error — falling back:', err);
+    console.warn('[Transcript] Supadata network error — using fallback:', err);
   }
 
   return [];
@@ -157,10 +305,7 @@ async function fetchViaExternalWorker(videoId: string): Promise<TranscriptSegmen
       cache: 'no-store',
     });
 
-    if (!res.ok) {
-      console.warn(`[Transcript] External proxy returned HTTP ${res.status}`);
-      return [];
-    }
+    if (!res.ok) return [];
 
     const data = await res.json();
     if (Array.isArray(data?.segments)) {
@@ -171,8 +316,8 @@ async function fetchViaExternalWorker(videoId: string): Promise<TranscriptSegmen
         }))
         .filter((s: TranscriptSegment) => s.text.length > 0);
     }
-  } catch (err) {
-    console.warn('[Transcript] External proxy error:', err);
+  } catch {
+    // Fall through
   }
 
   return [];
@@ -180,104 +325,159 @@ async function fetchViaExternalWorker(videoId: string): Promise<TranscriptSegmen
 
 async function fetchViaInnertubeClient(
   videoId: string,
-  clientType: 'IOS' | 'ANDROID'
-): Promise<InnertubeAttemptResult> {
-  const clientConfig =
-    clientType === 'IOS'
-      ? {
-          userAgent:
-            'com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)',
+  clientType: 'TV_EMBED' | 'IOS' | 'ANDROID'
+): Promise<ExtractionAttempt> {
+  const configs = {
+    TV_EMBED: {
+      userAgent:
+        'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version',
+      body: {
+        context: {
+          client: {
+            clientName: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+            clientVersion: '2.0',
+            hl: 'en',
+            gl: 'US',
+          },
+          thirdParty: {
+            embedUrl: 'https://www.youtube.com/',
+          },
+        },
+        videoId,
+      },
+    },
+    IOS: {
+      userAgent:
+        'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+      body: {
+        context: {
           client: {
             clientName: 'IOS',
-            clientVersion: '19.29.1',
+            clientVersion: '20.10.4',
             deviceMake: 'Apple',
             deviceModel: 'iPhone16,2',
             osName: 'iPhone',
-            osVersion: '17.5.1.21F90',
+            osVersion: '18.3.2.22D82',
             hl: 'en',
             gl: 'US',
           },
-        }
-      : {
-          userAgent: 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
+        },
+        videoId,
+      },
+    },
+    ANDROID: {
+      userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip',
+      body: {
+        context: {
           client: {
             clientName: 'ANDROID',
-            clientVersion: '19.09.37',
-            androidSdkVersion: 30,
+            clientVersion: '20.10.38',
+            androidSdkVersion: 34,
             hl: 'en',
             gl: 'US',
           },
-        };
+        },
+        videoId,
+      },
+    },
+  };
 
+  const selected = configs[clientType];
   const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'User-Agent': clientConfig.userAgent,
+      'User-Agent': selected.userAgent,
       'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
     },
-    body: JSON.stringify({
-      context: { client: clientConfig.client },
-      videoId,
-    }),
+    body: JSON.stringify(selected.body),
     signal: AbortSignal.timeout(9000),
     cache: 'no-store',
   });
 
   if (playerRes.status === 429 || playerRes.status === 403) {
-    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+    return { segments: [], tracksFound: false, ipBlocked: true, privateOrUnavailable: false };
   }
 
   if (!playerRes.ok) {
-    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+    return { segments: [], tracksFound: false, ipBlocked: false, privateOrUnavailable: false };
   }
 
-  const data = (await playerRes.json()) as InnertubePlayerResponse;
+  const data = (await playerRes.json()) as PlayerResponse;
   const status = data?.playabilityStatus?.status || '';
   const reason = data?.playabilityStatus?.reason || '';
 
   if (status === 'LOGIN_REQUIRED' || /bot|sign in|unusual traffic/i.test(reason)) {
-    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+    return { segments: [], tracksFound: false, ipBlocked: true, privateOrUnavailable: false };
   }
 
   if (status === 'UNPLAYABLE' || status === 'PRIVATE') {
-    return { segments: [], ipBlocked: false, privateOrUnavailable: true };
+    return { segments: [], tracksFound: false, ipBlocked: false, privateOrUnavailable: true };
   }
 
   const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
   if (!Array.isArray(tracks) || tracks.length === 0) {
-    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+    return { segments: [], tracksFound: false, ipBlocked: false, privateOrUnavailable: false };
   }
 
-  // Prefer manually uploaded captions first, then English/Hindi, then default track
-  const preferredTrack =
-    tracks.find((t) => t.kind !== 'asr' && t.languageCode === 'en') ||
-    tracks.find((t) => t.kind !== 'asr') ||
-    tracks.find((t) => t.languageCode === 'en') ||
-    tracks.find((t) => t.languageCode === 'hi') ||
-    tracks[0];
-
-  if (!preferredTrack?.baseUrl) {
-    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  const track = selectPreferredTrack(tracks);
+  if (!track?.baseUrl) {
+    return { segments: [], tracksFound: true, ipBlocked: false, privateOrUnavailable: false };
   }
 
-  const captionRes = await fetch(preferredTrack.baseUrl, {
-    signal: AbortSignal.timeout(9000),
+  const download = await downloadCaptionTrack(track.baseUrl);
+  return {
+    segments: download.segments,
+    tracksFound: true,
+    ipBlocked: download.blocked,
+    privateOrUnavailable: false,
+  };
+}
+
+async function fetchViaWatchPageHtml(videoId: string): Promise<ExtractionAttempt> {
+  const watchRes = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+      Cookie: 'CONSENT=YES+cb.20210328-17-p0.en+FX+667',
+    },
+    signal: AbortSignal.timeout(10000),
     cache: 'no-store',
   });
 
-  if (captionRes.status === 429 || captionRes.status === 403) {
-    return { segments: [], ipBlocked: true, privateOrUnavailable: false };
+  if (watchRes.status === 429 || watchRes.status === 403) {
+    return { segments: [], tracksFound: false, ipBlocked: true, privateOrUnavailable: false };
   }
 
-  if (!captionRes.ok) {
-    return { segments: [], ipBlocked: false, privateOrUnavailable: false };
+  if (!watchRes.ok) {
+    return { segments: [], tracksFound: false, ipBlocked: false, privateOrUnavailable: false };
   }
 
-  const xml = await captionRes.text();
-  const segments = parseTimedTextXml(xml);
+  const html = await watchRes.text();
 
-  return { segments, ipBlocked: false, privateOrUnavailable: false };
+  if (html.includes('consent.youtube.com') || html.includes('Sorry for the interruption')) {
+    return { segments: [], tracksFound: false, ipBlocked: true, privateOrUnavailable: false };
+  }
+
+  const rawTracks = extractJsonArrayAfterKey(html, '"captionTracks":');
+  if (!rawTracks || rawTracks.length === 0) {
+    return { segments: [], tracksFound: false, ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  const tracks = rawTracks as CaptionTrack[];
+  const track = selectPreferredTrack(tracks);
+  if (!track?.baseUrl) {
+    return { segments: [], tracksFound: true, ipBlocked: false, privateOrUnavailable: false };
+  }
+
+  const download = await downloadCaptionTrack(track.baseUrl);
+  return {
+    segments: download.segments,
+    tracksFound: true,
+    ipBlocked: download.blocked,
+    privateOrUnavailable: false,
+  };
 }
 
 function cleanArticleMarkdown(md: string): string {
@@ -397,41 +597,43 @@ export async function POST(req: NextRequest) {
           if (meta?.title) title = meta.title;
         }
       } catch {
-        // Continue with fallback title
+        // Continue with default title
       }
 
       // Tier 1: Managed API (Supadata)
       let segments = await fetchViaSupadata(videoId);
 
-      // Tier 2: Custom Residential Proxy / VPS Worker (if configured)
+      // Tier 2: Custom External Worker / Proxy (if configured)
       if (segments.length === 0) {
         segments = await fetchViaExternalWorker(videoId);
       }
 
-      // Tier 3: YouTube Innertube Mobile Clients (iOS -> Android)
+      let tracksFound = false;
       let ipBlocked = false;
       let privateOrUnavailable = false;
 
-      if (segments.length === 0) {
-        const iosResult = await fetchViaInnertubeClient(videoId, 'IOS').catch(() => ({
-          segments: [],
-          ipBlocked: false,
-          privateOrUnavailable: false,
-        }));
-        segments = iosResult.segments;
-        ipBlocked = iosResult.ipBlocked;
-        privateOrUnavailable = iosResult.privateOrUnavailable;
-      }
+      // Tier 3: YouTube Embedded TV Client -> Watch Page HTML -> iOS -> Android
+      const fallbackSteps: Array<() => Promise<ExtractionAttempt>> = [
+        () => fetchViaInnertubeClient(videoId, 'TV_EMBED'),
+        () => fetchViaWatchPageHtml(videoId),
+        () => fetchViaInnertubeClient(videoId, 'IOS'),
+        () => fetchViaInnertubeClient(videoId, 'ANDROID'),
+      ];
 
-      if (segments.length === 0 && !privateOrUnavailable) {
-        const androidResult = await fetchViaInnertubeClient(videoId, 'ANDROID').catch(() => ({
-          segments: [],
-          ipBlocked: false,
-          privateOrUnavailable: false,
-        }));
-        segments = androidResult.segments;
-        ipBlocked = ipBlocked || androidResult.ipBlocked;
-        privateOrUnavailable = privateOrUnavailable || androidResult.privateOrUnavailable;
+      for (const runStep of fallbackSteps) {
+        if (segments.length > 0 || privateOrUnavailable) break;
+        try {
+          const attempt = await runStep();
+          if (attempt.segments.length > 0) {
+            segments = attempt.segments;
+            break;
+          }
+          tracksFound = tracksFound || attempt.tracksFound;
+          ipBlocked = ipBlocked || attempt.ipBlocked;
+          privateOrUnavailable = privateOrUnavailable || attempt.privateOrUnavailable;
+        } catch {
+          // Try next extraction method
+        }
       }
 
       if (segments.length === 0) {
@@ -441,20 +643,24 @@ export async function POST(req: NextRequest) {
             { status: 403 }
           );
         }
-        if (ipBlocked) {
-          console.error(`[Transcript] All providers blocked by YouTube IP restriction for ${videoId}`);
+
+        if (tracksFound || ipBlocked) {
+          console.error(
+            `[Transcript] YouTube blocked caption download from Vercel IP for ${videoId} (tracksFound=${tracksFound}, ipBlocked=${ipBlocked})`
+          );
           return NextResponse.json(
             {
               error:
-                'YouTube has temporarily rate-limited requests from this cloud server IP. Please try again shortly or configure TRANSCRIPT_PROXY_URL.',
+                'Captions exist for this video, but YouTube temporarily blocked the transcript download from Vercel’s server IP. Update SUPADATA_API_KEY or configure TRANSCRIPT_PROXY_URL in Vercel to bypass datacenter IP blocks.',
             },
             { status: 503 }
           );
         }
+
         return NextResponse.json(
           {
             error:
-              'Transcript unavailable for this video (captions may be disabled by the creator).',
+              'No captions or subtitles were found for this video (it may not have subtitles enabled).',
           },
           { status: 404 }
         );
@@ -473,7 +679,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // B. Web Article Extraction (Preserved)
+    // B. Web Article Flow (Preserved)
     let targetUrl = cleanUrl;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
@@ -524,7 +730,7 @@ export async function POST(req: NextRequest) {
       const directRes = await fetch(targetUrl, {
         headers: {
           'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
         },
         signal: AbortSignal.timeout(10000),
       });
