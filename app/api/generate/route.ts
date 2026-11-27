@@ -29,35 +29,44 @@ function decodeHtmlEntities(str: string): string {
     .trim();
 }
 
-async function fetchDirectYouTubeTranscript(videoId: string): Promise<TranscriptSegment[]> {
-  const watchRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+async function fetchViaInnertube(videoId: string): Promise<TranscriptSegment[]> {
+  const playerRes = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+    method: 'POST',
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9,hi;q=0.8',
+      'Content-Type': 'application/json',
+      'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip',
     },
+    body: JSON.stringify({
+      context: {
+        client: {
+          clientName: 'ANDROID',
+          clientVersion: '19.09.37',
+          androidSdkVersion: 30,
+          hl: 'en',
+          gl: 'US',
+        },
+      },
+      videoId,
+    }),
     cache: 'no-store',
   });
 
-  if (!watchRes.ok) return [];
-  const html = await watchRes.text();
+  if (!playerRes.ok) return [];
+  const data = await playerRes.json();
+  const tracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-  const match = html.match(/"captionTracks":(\[.*?\])/);
-  if (!match || !match[1]) return [];
-
-  const tracks = JSON.parse(match[1]) as Array<{ baseUrl: string; languageCode?: string }>;
-  if (!tracks.length) return [];
+  if (!Array.isArray(tracks) || tracks.length === 0) return [];
 
   const preferredTrack =
-    tracks.find((t) => t.languageCode === 'en') ||
-    tracks.find((t) => t.languageCode === 'hi') ||
+    tracks.find((t: { languageCode?: string }) => t.languageCode === 'en') ||
+    tracks.find((t: { languageCode?: string }) => t.languageCode === 'hi') ||
     tracks[0];
 
   if (!preferredTrack?.baseUrl) return [];
 
-  const xmlRes = await fetch(preferredTrack.baseUrl, { cache: 'no-store' });
-  if (!xmlRes.ok) return [];
-  const xml = await xmlRes.text();
+  const captionRes = await fetch(preferredTrack.baseUrl, { cache: 'no-store' });
+  if (!captionRes.ok) return [];
+  const xml = await captionRes.text();
 
   const segments: TranscriptSegment[] = [];
   const regex = /<text start="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
@@ -76,7 +85,7 @@ async function fetchDirectYouTubeTranscript(videoId: string): Promise<Transcript
 
 function cleanArticleMarkdown(md: string): string {
   return md
-    .replace(/\[([^\]]+)\]\((javascript:[^)]+\vert{}#)\)/gi, '$1')
+    .replace(/\[([^\]]+)\]\((javascript:[^)]+|#)\)/gi, '$1')
     .replace(/!\[[^\]]*\]\(data:image[^)]+\)/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -130,8 +139,7 @@ async function generateSummaryDirect(
       }
 
       const data = await res.json();
-      const output: string =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const output: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
       if (output.trim()) {
         return output.trim();
       }
@@ -152,7 +160,6 @@ export async function POST(req: NextRequest) {
     const language = typeof body?.language === 'string' ? body.language : 'english';
     const format = typeof body?.format === 'string' ? body.format : 'detailed';
 
-    // Mode 1: AI Summary
     if (mode === 'summary') {
       if (text.trim().length < 25) {
         return NextResponse.json(
@@ -164,7 +171,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ summary });
     }
 
-    // Mode 2: Content Extraction
     if (!url.trim()) {
       return NextResponse.json({ error: 'Please enter a valid URL.' }, { status: 400 });
     }
@@ -172,7 +178,6 @@ export async function POST(req: NextRequest) {
     const cleanUrl = url.trim();
     const videoId = extractYouTubeId(cleanUrl);
 
-    // A. YouTube Transcript Flow
     if (videoId) {
       let segments: TranscriptSegment[] = [];
 
@@ -180,7 +185,7 @@ export async function POST(req: NextRequest) {
       if (supadataKey) {
         try {
           const ytRes = await fetch(
-            `https://api.supadata.ai/v1/youtube/transcript?videoId=${videoId}&text=false`,
+            `https://api.supadata.ai/v1/youtube/transcript?url=https://www.youtube.com/watch?v=${videoId}&text=false`,
             {
               headers: { 'x-api-key': supadataKey },
               cache: 'no-store',
@@ -189,22 +194,25 @@ export async function POST(req: NextRequest) {
 
           if (ytRes.ok) {
             const ytData = await ytRes.json();
-            const rawSegments = Array.isArray(ytData.content) ? ytData.content : [];
-            segments = rawSegments
-              .map((item: { text?: string; offset?: number }) => ({
-                text: (item.text || '').trim(),
-                offset: Math.floor((item.offset || 0) / 1000),
-              }))
-              .filter((s: TranscriptSegment) => s.text.length > 0);
+            if (Array.isArray(ytData?.content)) {
+              segments = ytData.content
+                .map((item: { text?: string; offset?: number }) => ({
+                  text: (item.text || '').trim(),
+                  offset: Math.floor((item.offset || 0) / 1000),
+                }))
+                .filter((s: TranscriptSegment) => s.text.length > 0);
+            } else if (typeof ytData?.content === 'string' && ytData.content.trim()) {
+              segments = [{ text: ytData.content.trim(), offset: 0 }];
+            }
           }
         } catch {
-          // Fallback below
+          // Proceed to Innertube fallback
         }
       }
 
       if (segments.length === 0) {
         try {
-          segments = await fetchDirectYouTubeTranscript(videoId);
+          segments = await fetchViaInnertube(videoId);
         } catch {
           // Handled below
         }
@@ -214,7 +222,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'Transcript unavailable for this video. Captions may be disabled by the creator.',
+              'Captions could not be fetched for this video (it may be a music/instrumental video without subtitles, or captions are turned off).',
           },
           { status: 404 }
         );
@@ -245,7 +253,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // B. Web Article Flow
     let targetUrl = cleanUrl;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
